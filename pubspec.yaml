@@ -49,6 +49,13 @@ dependencies:
   connectivity_plus: ^6.0.5
 
   # Models / serialization
+  # Mobile-desktop pairing (Phase 3). Maintained by terrier989/dint-dev.
+  # X25519 + AES-GCM + HKDF + HMAC + Argon2id in one family. Native backends
+  # via Apple CryptoKit + Android javax.crypto (50x faster than pure-Dart
+  # fallback). Single dependency for the entire pairing crypto path.
+  # Spec: docs/specs/mobile-desktop-pairing-spike.md.
+  cryptography: ^2.9.0
+  cryptography_flutter: ^2.3.4
   freezed_annotation: ^2.4.4
   json_annotation: ^4.9.0
 

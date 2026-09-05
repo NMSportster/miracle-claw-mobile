@@ -195,27 +195,91 @@ miracle-claw-mobile/
 - `services/sync_service.dart` — `workmanager` background outbox flush, retries with backoff
 - **Verification**: start a session offline, watch messages queue, reconnect, watch them send in order
 
-### Phase 3 — QR pairing to desktop gateway (~1.5 days, includes a small desktop patch)
+### Phase 3 — Auto-discovery pairing to desktop gateway (~2.5 days, depends on desktop-side patch)
+
+**REVISED 2026-09-05 by Home Claw + David.** Original QR-scan design was wrong on three counts; replaced with the locked "install and go" architecture. Full spec (the source of truth): `/home/steeler/milagro_ai_cloud/docs/specs/mobile-desktop-pairing.md`. Phase 0 spike results (package selections validated): `mobile-desktop-pairing-spike.md`. **Any code in this phase MUST conform to those docs — they supersede this PLAN.md section.**
+
+**What changed vs the old design:**
+1. ❌ Tailscale required → ✅ removed as a precondition (customers don't install Tailscale)
+2. ❌ QR scan as primary flow → ✅ silent X25519 + AES-GCM handshake, zero taps
+3. ❌ mDNS as primary discovery → ✅ MAIC presence relay as primary; mDNS via bonsoir is opportunistic LAN shortcut
+4. ❌ Phone had no filesystem access → ✅ phone is sandboxed to one drop-folder chosen by desktop owner (David pushed back on locking FS out)
 
 **Mobile changes:**
-- `features/auth/qr_pair_screen.dart` — `mobile_scanner`, captures `{host, port, token, fingerprint}`
-- `core/api/api_client.dart` — add `baseUrl` switching logic: paired URL if reachable, else direct
-- `core/config/app_config.dart` — paired-mode state, persisted
-- `services/connectivity_service.dart` — probe paired URL health every 30s
+- **Delete** `features/auth/qr_pair_screen.dart` and its route (replaced by automatic discovery; users never see a pairing screen)
+- **New** `lib/core/pairing/` module:
+  - `key_store.dart` — X25519 keypair generation + `flutter_secure_storage` round-trip
+  - `mdns_scanner.dart` — bonsoir-based mDNS discovery (LAN shortcut only; primary discovery is MAIC)
+  - `transport.dart` — transport-ladder URL provider (LAN → MAIC → cloud)
+  - `pairing_service.dart` — discovery loop + handshake state machine
+  - `discovery_state.dart` — Riverpod state: `CloudOnly | Paired | PairingInFlight`
+- `core/api/api_client.dart` — `baseUrl` now derived from `DiscoveryState` (was: compile-time constant)
+- `core/config/app_config.dart` — drop the "Direct / Paired" toggle; add `mobile_drop_folder` reader
+- `services/connectivity_service.dart` — probe paired URL health every 60s + on network-change
+- `features/settings/connected_devices_screen.dart` — new: shows current pairing state, "Pair a different desktop" affordance (mDNS scan first, manual endpoint entry as last resort with security warning)
+
+**Locked dependency additions** (`pubspec.yaml`):
+```yaml
+dependencies:
+  bonsoir: ^7.1.5                   # mDNS discovery + broadcast
+  cryptography: ^2.9.0               # X25519 + AES-GCM + HKDF + HMAC
+  cryptography_flutter: ^2.3.4      # native Apple/Android crypto backend
+  flutter_secure_storage: ^9.2.2     # already in plan
+  device_info_plus: ^10.1.0          # device_name for handshake
+  connectivity_plus: ^6.1.0         # already in plan
+```
+
+**iOS Info.plist additions** (Phase 3, alongside bonsoir):
+```xml
+<key>NSLocalNetworkUsageDescription</key>
+<string>Miracle Claw connects to your desktop on your home Wi-Fi to access your files and chat history.</string>
+<key>NSBonjourServices</key>
+<array><string>_miracle-claw._tcp.</string></array>
+```
 
 **Desktop changes** (separate PR to `miracle-claw` repo, not this one):
-- New Tauri command `mc_get_pairing_qr` in `src-tauri/src/lib.rs`:
-  ```rust
-  #[tauri::command]
-  async fn mc_get_pairing_qr(window: tauri::Window) -> Result<PairingQr, String> { ... }
-  ```
-  Returns `{host: tailnet_ip_or_lan_ip, port: 28789, token: base64url_32B_5min_TTL, fingerprint: sha256(public_key), expires_at}`
-- New capability `src-tauri/capabilities/mobile-bridge.json` — scoped to tailnet URLs only, allows `mc_get_pairing_qr` + `mc_mint_session` + `mc_get_modules`
-- New Settings page `pages/mobile_pairing.js` — shows QR, status ("paired with 2 devices"), revoke button
-- Update launcher invocation in `setup()` to support `--bind tailnet` (already wired in launcher.rs, just need UI toggle)
-- On successful phone verification, desktop mints a session JWT scoped to mobile capabilities (no shell exec, no filesystem, only chat + module list + invoke)
+- Six new Tauri commands replace the old `mc_get_pairing_qr`:
+  - `mc_register_desktop` — first-boot registration; returns `instance_id`
+  - `mc_initiate_pair` — the handshake endpoint (X25519 ephemeral + AES-GCM session token)
+  - `mc_paired_devices` — list for the "Connected devices" page
+  - `mc_revoke_device` — forget a phone
+  - `mc_unregister_desktop` — graceful shutdown, best-effort `DELETE /v1/users/me/desktops/{id}`
+  - `mc_get_pairing_status` — for the Settings page header
+- `src-tauri/src/discovery.rs` (new) — mDNS advertisement (Rust `zeroconf` crate) when bind is not loopback. TXT records: `{instance_id, fp=<fingerprint>, ver=<version>, pk=<pubkey prefix>}`
+- **Modify** existing `main.json` capability to include the 6 new commands (no new capability file needed — desktop-internal commands invoked from the dashboard's own webview)
+- In-memory `HashMap<session_id, session_secret>` (secrets live in process memory only — never on disk)
+- `~/.miracle-claw/paired_sessions.json` (audit trail, fingerprints only)
+- New Settings page `paired_devices.js` (replaces `mobile_pairing.js`) — list of paired phones, "Forget" button, advanced "Show QR" as last-resort recovery
+- Network-change hook — subscribe to OS notifications, trigger immediate heartbeat on change (Rust `tauri-plugin-network` or polling `getifaddrs()`)
+- Graceful shutdown hook — `mc_unregister_desktop` on app quit (best-effort, 2s timeout)
 
-**Verification**: pair from phone → phone routes chat through desktop gateway → desktop's modules appear in mobile app → kill desktop → phone auto-falls-back to direct MAIC within 30s
+**MAIC backend additions** (separate PR to `milagro_ai_cloud`, blocks Phase 2 desktop work):
+- Migration 031: `paired_desktops` (heartbeat state, includes `mobile_drop_folder TEXT`) + `paired_devices` (audit log)
+- 8 endpoints under `/v1/users/me/`:
+  - `GET /desktop` — most-recently-active endpoint, 204 if none
+  - `GET /desktops` — all paired desktops (UI picker)
+  - `PUT /desktops/{id}` — first-boot registration (idempotent)
+  - `PUT /desktops/{id}/heartbeat` — 60s tick + on-change
+  - `POST /desktops/{id}/drop-folder` — desktop owner picks the phone drop-folder; reads as `null` if disabled
+  - `DELETE /desktops/{id}` — graceful shutdown
+  - `GET /desktops/{id}/paired-devices` — list phones (desktop dashboard)
+  - `DELETE /desktops/{id}/paired-devices/{device_id}` — revoke
+- Stale cleanup cron: nightly `DELETE FROM paired_desktops WHERE last_heartbeat_at < NOW() - INTERVAL '7 days'`
+
+**Drop-folder model** (David's call 2026-09-05 08:48 MDT): phone FS access is sandboxed to one folder chosen by the desktop owner. Phone can read, list, write, delete files *inside that folder*; everything else is denied at the gateway (path-traversal, absolute paths, symlinks out → 403). Sync semantics: phone writes land on desktop under `~/.miracle-claw/mobile_drops/<device_short_id>/`; desktop shows "Phone drops (N)" sidebar entry; user copies/integrates at will.
+
+**Locked capability scope** (per-device session):
+- ✅ Phone allowed: `chat`, `sessions:r/w` (UX confirmation on first-write-per-session), `modules:list`/`invoke` (rate limit + paid-module confirmation), `voice:passthrough` (no voice secrets leave desktop), `filesystem:list_dir`/`read_file`/`read_image`/`write_file`/`open_externally` (sandboxed to drop-folder only), `filesystem:list_allowed_roots` (returns just the drop-folder path or empty)
+- ❌ Phone denied: `secrets:read` (vault values), `byo_keys:use` (uses MAIC routing), `shell:execute` (never), filesystem outside drop-folder, `users:manage`, `payment:checkout`
+
+**Verification**: install both apps → log into MAIC on phone → phone auto-discovers desktop (mDNS if on LAN, MAIC presence otherwise) → handshake happens silently within ~3 seconds of discovery → "Connected to your home PC" toast appears once → chat message sent → confirmed received on desktop → drop a file from phone → see it on desktop under `mobile_drops/<device_short_id>/` → revoke phone from desktop → next phone request → 401 → phone re-handshakes (or shows "Paired device revoked" if MAIC also rejects)
+
+**Phase 3 prerequisites** (must be done before mobile code):
+1. Phase 1 (MAIC backend, ~2 days) — migration 031 + 8 endpoints + tests
+2. Phase 2 (Tauri desktop, ~3 days) — 6 commands + sandbox enforcement + **Rust↔Dart crypto compat test** (`x25519-dalek` + `aes-gcm` + `hkdf` + `hmac` round-trip with Dart, asserting same session_secret)
+3. Phase 3 (this work, ~2.5 days)
+
+**Manual test plan** (Phase 4): real physical phone + real desktop on same Wi-Fi. Android emulator does NOT support NSD; iOS Simulator may not surface the local-network permission dialog. No emulator-based end-to-end test possible.
 
 ### Phase 4 — Push notifications + background sync (~1 day)
 
@@ -301,8 +365,11 @@ This is a separate PR to `miracle-claw`. Should not block mobile Phase 1 + Phase
 
 ## Carry-forward rules
 
-- When adding new Tauri-side commands for mobile pairing, scope them under `mobile-bridge` capability, NEVER add to `main.json` or `bridge.json`.
-- Mobile paired-mode tokens must be single-use + short-TTL. Never embed a long-lived MAIC JWT in a QR code.
-- Don't replicate MAIC's auth state on mobile — always go through `/v1/users/login`. Don't invent a parallel auth path.
-- When adding endpoints to MAIC for mobile use, follow the existing naming: `/v1/users/me/...` for per-user resources, `/v1/admin/...` for master-key gated.
-- Test users for development: `test<N>@milagrocloud.com` (canonical convention per MEMORY). NEVER use `championnm@yahoo.com` for mobile testing — same lockout risk as desktop agent.
+> **REVISED 2026-09-05**: rules 1 and 2 from the original list contradict the locked pairing spec. Updated to match. Source of truth: `/home/steeler/milagro_ai_cloud/docs/specs/mobile-desktop-pairing.md` § "Carry-forward rules".
+
+- **Adding new Tauri-side commands for mobile pairing**: add them to the existing `main.json` capability (desktop-internal commands invoked from the dashboard's own webview). Do NOT create a new `mobile-bridge.json` capability file — that pattern was abandoned when the QR-scan flow was replaced by silent handshake. Do NOT add to `bridge.json` either — that one is scoped to `127.0.0.1:28789` chat webview, not desktop-internal commands.
+- **Mobile paired-mode session tokens**: AES-256-GCM encrypted, 30-day sliding expiry, revocable from desktop via `mc_revoke_device`. Long-lived MAIC JWT is sent over the wire during handshake (1 round-trip), but **no session secret is ever on disk** — desktop keeps secrets in process memory only; phone persists the AES-decrypted session_secret in `flutter_secure_storage` (Android Keystore-backed).
+- **Don't replicate MAIC's auth state on mobile** — always go through `/v1/users/login`. Don't invent a parallel auth path. (Unchanged.)
+- **MAIC endpoint naming**: per-user resources go under `/v1/users/me/...`; master-key gated under `/v1/admin/...`. New pairing endpoints (Phase 1 MAIC backend) live at `/v1/users/me/desktop{,s,...}` per spec.
+- **Test users for development**: `test<N>@milagrocloud.com` (canonical convention per MEMORY). NEVER use `championnm@yahoo.com` for mobile testing — same lockout risk as desktop agent.
+- **Cross-repo work**: pairing touches 3 repos. Spec doc lives in `milagro_ai_cloud/docs/specs/` because the MAIC endpoints are the durable surface; PLAN.md (this file) summarizes the mobile slice; the Tauri PR in `miracle-claw` references the spec by path. When in doubt, read the spec first.
