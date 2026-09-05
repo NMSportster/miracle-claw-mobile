@@ -1,12 +1,20 @@
 # Miracle Claw Mobile — Build Plan
 
 **Project**: `miracle-claw-mobile`
-**Target**: Android (primary), Linux desktop (dev convenience)
+**Target**: Android + iOS (iOS added 2026-09-04 per David — worldwide distribution)
 **Backend**: `api.maicserver.com` (MAIC public, Hetzner canonical)
 **Desktop companion**: `miracle-claw` Tauri app, `1.1.0-rc55.18`
 **Repo**: `https://github.com/NMSportster/miracle-claw-mobile` (new)
 **Bundle ID**: `com.milagrocloud.miracle-claw.mobile`
 **Authored**: 2026-09-04 by Home Claw + David
+
+---
+
+## Platform targets
+
+- **Android**: min SDK 24 (Android 7.0 Nougat, 2016). Covers ~98% of active Android devices.
+- **iOS**: deployment target 15.0. Covers iPhone 6s/7+ and newer, ~97% of in-use iPhones.
+- **Linux desktop**: scaffold removed (dev-only convenience not needed).
 
 ---
 
@@ -276,7 +284,6 @@ This is a separate PR to `miracle-claw`. Should not block mobile Phase 1 + Phase
 
 ## What this app is NOT
 
-- Not an iOS app (Android only, per David 2026-09-04)
 - Not a local model runner (MAIC-only; no Ollama-on-phone)
 - Not a module installer (read-only listing; full install stays desktop-only)
 - Not a chat UI redesign (intentionally mirrors desktop's UX so phone and desktop feel like one app)
