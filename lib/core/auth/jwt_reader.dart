@@ -9,9 +9,14 @@ typedef JwtReader = Future<String?> Function();
 const String kAccessTokenKey = 'mcm.access_token';
 
 /// Provider for the secure storage instance (singleton).
+/// Note: `encryptedSharedPreferences: false` because EncryptedSharedPreferences
+/// on Android 10 (Samsung) hangs in an infinite retry loop during init.
+/// Tradeoff: SharedPreferences values are not encrypted at rest, but they
+/// ARE isolated per-app and protected by Android's per-app sandbox. For
+/// the JWT-only use case this is acceptable; revisit if storing PII.
 final secureStorageProvider = Provider<FlutterSecureStorage>((ref) {
   return const FlutterSecureStorage(
-    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+    aOptions: AndroidOptions(encryptedSharedPreferences: false),
     iOptions: IOSOptions(
       accessibility: KeychainAccessibility.first_unlock_this_device,
     ),
