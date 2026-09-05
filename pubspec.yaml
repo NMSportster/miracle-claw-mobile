@@ -39,6 +39,10 @@ dependencies:
   # Voice input (Phase 2 — declared now so it's available)
   speech_to_text: ^7.0.0
   flutter_tts: ^4.2.0
+  permission_handler: ^11.3.1
+
+  # Markdown rendering for chat bubbles (Phase 2 polish)
+  flutter_markdown: ^0.7.4
 
   # Background sync (Phase 2 — declared when we wire it up)
   # workmanager: ^0.5.2
