@@ -68,3 +68,5 @@ crashlytics-build/
 # Screenshots / videos from device
 screenshots/
 *.mp4
+ios/Runner/GoogleService-Info.plist
+ios/Runner/GoogleService-Info.plist.*
