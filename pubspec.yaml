@@ -48,6 +48,10 @@ dependencies:
   # workmanager: ^0.5.2
   connectivity_plus: ^6.0.5
 
+  # Pairing service (Phase 3)
+  device_info_plus: ^12.4.0
+  uuid: ^4.5.1
+
   # Models / serialization
   # Mobile-desktop pairing (Phase 3). Maintained by terrier989/dint-dev.
   # X25519 + AES-GCM + HKDF + HMAC + Argon2id in one family. Native backends
