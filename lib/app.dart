@@ -3,17 +3,40 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'core/auth/auth_repository.dart';
+import 'core/pairing/discovery_state.dart';
+import 'core/pairing/pairing_service.dart';
 import 'features/auth/biometric_unlock_screen.dart';
 import 'features/auth/login_screen.dart';
 import 'features/shell/home_shell.dart';
 
 /// Top-level app widget. Sets up Material 3 dark theme + router that reacts to
-/// auth state changes.
+/// auth state changes. Also wires the pairing discovery loop to start/stop
+/// based on auth state — Phase 3.1.
 class MiracleClawApp extends ConsumerWidget {
   const MiracleClawApp({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Phase 3.1: react to auth state changes to start/stop the pairing
+    // discovery loop. Started on signedIn, stopped on signedOut (and on
+    // boot's "unknown" → initial state, where we don't want to spam MAIC
+    // before the user has a JWT).
+    ref.listen<AuthState>(authNotifierProvider, (prev, next) {
+      final svc = ref.read(pairingServiceProvider);
+      if (next.status == AuthStatus.signedIn) {
+        svc.startDiscovery((s) {
+          ref.read(connectionStateProvider.notifier).state = s;
+        });
+      } else if (prev?.status == AuthStatus.signedIn) {
+        // Was signed in, now not — stop the loop.
+        svc.stopDiscovery();
+        // Drop any cached Paired state so we don't display stale info on
+        // the next sign-in.
+        ref.read(connectionStateProvider.notifier).state =
+            const CloudOnly(reason: 'first_run');
+      }
+    });
+
     final router = ref.watch(routerProvider);
     return MaterialApp.router(
       title: 'Miracle Claw',
