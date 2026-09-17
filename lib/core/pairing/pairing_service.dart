@@ -29,9 +29,9 @@ import 'package:cryptography/cryptography.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:uuid/uuid.dart';
 
 import '../auth/jwt_reader.dart';
+import 'device_id_store.dart';
 import 'discovery_state.dart';
 import 'key_store.dart';
 import 'session.dart';
@@ -72,16 +72,19 @@ class _PairingHttp {
 class PairingService {
   PairingService({
     required PhoneKeyStore keyStore,
+    required DeviceIdStore deviceIdStore,
     required JwtReader jwtReader,
     required TransportLadder ladder,
     Dio? dioOverride,
     DeviceInfoPlugin? deviceInfo,
   })  : _keys = keyStore,
+        _deviceIds = deviceIdStore,
         _ladder = ladder,
         _deviceInfo = deviceInfo ?? DeviceInfoPlugin(),
         _http = _PairingHttp(jwtReader);
 
   final PhoneKeyStore _keys;
+  final DeviceIdStore _deviceIds;
   final TransportLadder _ladder;
   final DeviceInfoPlugin _deviceInfo;
   // ignore: unused_field — exposed via getter for tests
@@ -167,11 +170,11 @@ class PairingService {
   }
 
   Future<ConnectionState> _handshakeWith(DesktopInstance desktop) async {
-    // Need a stable device_id (persisted across launches). For v1 we
-    // generate a fresh one per app install — phone-side persistence
-    // belongs in v2 (paired_devices uses device_id for revocation).
-    // TODO(v2): persist device_id to flutter_secure_storage.
-    final deviceId = const Uuid().v4();
+    // Stable device_id persisted in secure storage (see device_id_store.dart).
+    // Reusing the same device_id across re-handshakes lets the desktop
+    // recognize "this is the same phone coming back" and preserve audit
+    // trail in the paired_devices table.
+    final deviceId = await _deviceIds.ensure();
 
     // device_name from device_info_plus.
     final deviceName = await _readDeviceName();
@@ -188,7 +191,7 @@ class PairingService {
         data: {
           'device_name': deviceName,
           'device_id': deviceId,
-          'device_pubkey': pubB64,
+          'phone_pubkey_b64': pubB64,
           'fingerprint': fp,
         },
         options: Options(
@@ -220,6 +223,7 @@ class PairingService {
             .toList(),
         expiresAt: DateTime.tryParse(body['expires_at'] as String? ?? '') ??
             DateTime.now().add(const Duration(days: 30)),
+        deviceId: deviceId,
       );
 
       return Paired(desktop: desktop, session: session);
@@ -285,6 +289,39 @@ class PairingService {
       return 'Unknown device';
     }
   }
+
+  // ─── Revoke (Sign out of paired desktop) ──────────────────────────────
+
+  /// Tell the desktop to revoke our session + clear local pairing state.
+  ///
+  /// Spec § "DELETE /desktops/{instance_id}/paired-devices/{device_id}":
+  /// the phone's UUID device_id (from `X-Miracle-Pair-Device` header) is
+  /// the natural key for this call. The desktop calls MAIC DELETE to set
+  /// `revoked_at = NOW()` on the paired_devices row; the phone's next
+  /// request returns 401 → re-handshake flow (which fails if the desktop
+  /// still considers us revoked).
+  ///
+  /// Best-effort: if the desktop is unreachable (offline), we still
+  /// clear local state — the local cleanup matters more than the
+  /// server-side revoke, and the desktop will expire the session on
+  /// the next `expires_at` (30d default).
+  ///
+  /// Returns true if the desktop acknowledged (HTTP 204). False on any
+  /// error (network, 4xx, 5xx) — caller can still proceed with local
+  /// cleanup regardless.
+  Future<bool> revokePairedDesktop(PairSession session) async {
+    try {
+      final resp = await _http.dio.delete<dynamic>(
+        '${session.endpoint}/v1/users/me/desktops/${session.instanceId}/paired-devices/${session.deviceId}',
+        options: Options(
+          validateStatus: (s) => s != null && s < 500,
+        ),
+      );
+      return resp.statusCode == 204 || resp.statusCode == 200;
+    } on DioException {
+      return false;
+    }
+  }
 }
 
 /// Hex-decode helper (Uint8List view of hex string).
@@ -303,11 +340,19 @@ Uint8List hexDecode(String hex) {
 
 final phoneKeyStoreProvider = Provider<PhoneKeyStore>((ref) => PhoneKeyStore());
 
+final deviceIdStoreProvider = Provider<DeviceIdStore>((ref) => DeviceIdStore());
+
 final transportLadderProvider = Provider<TransportLadder>((ref) => const TransportLadder());
 
 final pairingServiceProvider = Provider<PairingService>((ref) {
   final keys = ref.watch(phoneKeyStoreProvider);
+  final deviceIds = ref.watch(deviceIdStoreProvider);
   final ladder = ref.watch(transportLadderProvider);
   final jwt = ref.watch(jwtReaderProvider);
-  return PairingService(keyStore: keys, jwtReader: jwt, ladder: ladder);
+  return PairingService(
+    keyStore: keys,
+    deviceIdStore: deviceIds,
+    jwtReader: jwt,
+    ladder: ladder,
+  );
 });

@@ -62,13 +62,22 @@ class _ConnectedDevicesScreenState extends ConsumerState<ConnectedDevicesScreen>
   }
 
   Future<void> _forget(Paired state) async {
-    // v1: just clear the local ConnectionState. v2: also call
-    // mc_revoke_device on the desktop to invalidate the session there.
+    // Phase 3.2b: tell the desktop to revoke us (best-effort), then
+    // clear local state. If the desktop is unreachable, we still clear
+    // local — the user wanted to sign out, so don't hold them hostage
+    // waiting for a server round-trip.
+    final svc = ref.read(pairingServiceProvider);
+    final revoked = await svc.revokePairedDesktop(state.session);
+
     ref.read(connectionStateProvider.notifier).state =
         const CloudOnly(reason: 'revoked');
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Signed out of ${state.desktop.instanceName}.')),
+        SnackBar(
+          content: Text(revoked
+              ? 'Signed out of ${state.desktop.instanceName}.'
+              : 'Signed out locally of ${state.desktop.instanceName}. Desktop unreachable — server revoke will expire naturally.'),
+        ),
       );
     }
   }

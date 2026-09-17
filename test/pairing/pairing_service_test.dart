@@ -7,6 +7,7 @@
 // real hardware).
 
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -103,6 +104,7 @@ void main() {
         endpointKind: 'relay',
         capabilities: const [],
         expiresAt: DateTime.now().subtract(const Duration(hours: 1)),
+        deviceId: 'd',
       );
       final future = PairSession(
         sessionId: 's',
@@ -113,6 +115,7 @@ void main() {
         endpointKind: 'relay',
         capabilities: const [],
         expiresAt: DateTime.now().add(const Duration(days: 30)),
+        deviceId: 'd',
       );
       expect(past.isExpired(DateTime.now()), true);
       expect(future.isExpired(DateTime.now()), false);
@@ -137,6 +140,47 @@ void main() {
       expect(sigEmpty, isNot(sigBody));
     });
   });
+
+
+group('PairInitiate body shape', () {
+  // Lesson 196: static-source assertions. The pairing_service.dart file
+  // MUST use phone_pubkey_b64 (the canonical desktop field name from
+  // pairing_commands.rs::initiate_pair) and NOT device_pubkey (the legacy
+  // name that fails to deserialize on the desktop side). Renaming back
+  // would silently break every handshake — desktop returns 400 because
+  // phone_pubkey_b64 is missing from the request body.
+  test('uses phone_pubkey_b64, not device_pubkey, in /pair/initiate body', () {
+    final src = File('lib/core/pairing/pairing_service.dart').readAsStringSync();
+    expect(src, contains('phone_pubkey_b64'));
+    // The legacy name must not appear in any non-comment line.
+    final noDevicePubkey = src
+        .split('\n')
+        .where((line) =>
+            !line.trimLeft().startsWith('//') &&
+            !line.trimLeft().startsWith('*'))
+        .where((line) => line.contains('device_pubkey'))
+        .toList();
+    expect(noDevicePubkey, isEmpty,
+        reason: 'Found non-comment line(s) still using device_pubkey: '
+            '$noDevicePubkey');
+  });
+
+  test('includes device_id in /pair/initiate body', () {
+    final src = File('lib/core/pairing/pairing_service.dart').readAsStringSync();
+    expect(src, contains("'device_id': deviceId"));
+  });
+
+  test('includes fingerprint in /pair/initiate body', () {
+    final src = File('lib/core/pairing/pairing_service.dart').readAsStringSync();
+    expect(src, contains("'fingerprint': fp"));
+  });
+
+  test('includes device_name in /pair/initiate body', () {
+    final src = File('lib/core/pairing/pairing_service.dart').readAsStringSync();
+    expect(src, contains("'device_name': deviceName"));
+  });
+});
+
 }
 
 PairSession _dummySession() => PairSession(
@@ -148,4 +192,7 @@ PairSession _dummySession() => PairSession(
       endpointKind: 'lan',
       capabilities: const ['chat', 'sessions:rw', 'modules:invoke'],
       expiresAt: DateTime.now().add(const Duration(days: 30)),
+      deviceId: 'dev_1',
     );
+
+

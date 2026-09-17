@@ -105,8 +105,11 @@ class _PairingInterceptor extends Interceptor {
       final sig = await signRequestBody(session: state.session, body: body);
       options.headers['X-Miracle-Pair-Session'] =
           '${state.session.sessionId}:$sig';
-      // device_id isn't stored in PairSession for v1 (see TODO in
-      // pairing_service.dart); omit the device header for now.
+      // Spec § "Subsequent requests": X-Miracle-Pair-Device: <device_id>
+      // on every paired request. Desktop uses this to associate the
+      // session with a known device in its paired_devices audit table
+      // and to honor per-device revocations.
+      options.headers['X-Miracle-Pair-Device'] = state.session.deviceId;
     }
     handler.next(options);
   }

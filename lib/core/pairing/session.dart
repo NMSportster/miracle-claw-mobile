@@ -29,6 +29,7 @@ class PairSession {
     required this.endpointKind,
     required this.capabilities,
     required this.expiresAt,
+    required this.deviceId,
   });
 
   /// UUID assigned by the desktop. Identifies this session.
@@ -56,6 +57,13 @@ class PairSession {
 
   /// When this session expires. Phone re-handshakes before this time.
   final DateTime expiresAt;
+
+  /// Phone's stable UUID (persisted in flutter_secure_storage). The desktop
+  /// uses this to associate the session with a known device in its
+  /// paired_devices audit table, and to honor per-device revocations.
+  /// Sent on every request as `X-Miracle-Pair-Device` (spec § "Subsequent
+  /// requests").
+  final String deviceId;
 
   bool isExpired(DateTime now) => now.isAfter(expiresAt);
 
