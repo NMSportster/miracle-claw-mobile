@@ -38,6 +38,9 @@ dependencies:
 
   # Voice input (Phase 2 — declared now so it's available)
   speech_to_text: ^7.0.0
+
+  # Date/time formatting in workspace screens (detail card timestamps)
+  intl: ^0.19.0
   flutter_tts: ^4.2.0
   permission_handler: ^11.3.1
 

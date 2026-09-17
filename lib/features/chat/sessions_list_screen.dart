@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/chat_repository.dart';
-import 'chat_screen.dart';
 
 /// List of saved sessions. Tap to open, long-press to delete.
 class SessionsListScreen extends ConsumerWidget {

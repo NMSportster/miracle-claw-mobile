@@ -132,3 +132,11 @@ final appDatabaseProvider = Provider<AppDatabase>((ref) {
   ref.onDispose(db.close);
   return db;
 });
+
+/// Stream provider for the sessions list screen. Watches the local
+/// Drift DB so the list reflects offline state immediately, then
+/// converges with MAIC once the network round-trips complete.
+final sessionsListProvider = StreamProvider<List<Session>>((ref) {
+  final repo = ref.watch(chatRepositoryProvider);
+  return repo.watchSessions();
+});

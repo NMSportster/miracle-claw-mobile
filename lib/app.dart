@@ -3,39 +3,28 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'core/auth/auth_repository.dart';
-import 'core/pairing/discovery_state.dart';
-import 'core/pairing/pairing_service.dart';
 import 'features/auth/biometric_unlock_screen.dart';
 import 'features/auth/login_screen.dart';
 import 'features/shell/home_shell.dart';
+import 'features/workspace/workspace_create_screen.dart';
+import 'features/workspace/workspace_detail_screen.dart';
 
 /// Top-level app widget. Sets up Material 3 dark theme + router that reacts to
-/// auth state changes. Also wires the pairing discovery loop to start/stop
-/// based on auth state — Phase 3.1.
+/// auth state changes. Workspace discovery is started/stopped by the auth
+/// listener — the workspace service handles its own SSE subscription, so we
+/// don't need the pairing discovery loop anymore (2026-09-16).
 class MiracleClawApp extends ConsumerWidget {
   const MiracleClawApp({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // Phase 3.1: react to auth state changes to start/stop the pairing
-    // discovery loop. Started on signedIn, stopped on signedOut (and on
-    // boot's "unknown" → initial state, where we don't want to spam MAIC
-    // before the user has a JWT).
-    ref.listen<AuthState>(authNotifierProvider, (prev, next) {
-      final svc = ref.read(pairingServiceProvider);
-      if (next.status == AuthStatus.signedIn) {
-        svc.startDiscovery((s) {
-          ref.read(connectionStateProvider.notifier).state = s;
-        });
-      } else if (prev?.status == AuthStatus.signedIn) {
-        // Was signed in, now not — stop the loop.
-        svc.stopDiscovery();
-        // Drop any cached Paired state so we don't display stale info on
-        // the next sign-in.
-        ref.read(connectionStateProvider.notifier).state =
-            const CloudOnly(reason: 'first_run');
-      }
-    });
+    // 2026-09-16 pivot: the workspace REST + SSE feed is started lazily
+    // by the providers themselves (the first time any screen reads
+    // workspaceServiceProvider). No more pairing discovery loop.
+    //
+    // The old code below was wired to the pairing service to start/stop
+    // desktop discovery on auth state. It's removed because pairing is
+    // deprecated — see memory/projects/workspace_architecture.md.
 
     final router = ref.watch(routerProvider);
     return MaterialApp.router(
@@ -99,6 +88,16 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/login', builder: (_, _) => const LoginScreen()),
       GoRoute(path: '/unlock', builder: (_, _) => const BiometricUnlockScreen()),
       GoRoute(path: '/', builder: (_, _) => const HomeShell()),
+      GoRoute(
+        path: '/workspace/new',
+        builder: (_, _) => const WorkspaceCreateScreen(),
+      ),
+      GoRoute(
+        path: '/workspace/:noteId',
+        builder: (_, state) => WorkspaceDetailScreen(
+          noteId: state.pathParameters['noteId']!,
+        ),
+      ),
     ],
   );
 });

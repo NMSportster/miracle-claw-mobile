@@ -1,13 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../chat/chat_screen.dart';
-import '../settings/connected_devices_screen.dart';
-import '../../core/pairing/discovery_state.dart';
+import '../workspace/workspace_list_screen.dart';
+import '../../core/workspace/workspace_providers.dart';
 
-/// Top-level shell after sign-in. v1 has two destinations:
+/// Top-level shell after sign-in. Two destinations:
 ///   - Chat (default — the primary use case)
-///   - Connected Devices (Phase 3 — pair with a desktop, view status)
+///   - Tasks (the per-user workspace — phone ↔ desktop message bus)
+///
+/// 2026-09-16 pivot: replaces the old "Connected Devices" pairing
+/// destination. See memory/projects/workspace_architecture.md.
 ///
 /// Uses `Drawer` rather than `NavigationRail` so it works on phones in
 /// portrait without taking permanent screen space. Material 3 design
@@ -30,9 +34,9 @@ class _HomeShellState extends ConsumerState<HomeShell> {
       selectedIcon: Icons.chat_bubble,
     ),
     _NavDestination(
-      label: 'Connected Devices',
-      icon: Icons.devices_other,
-      selectedIcon: Icons.devices,
+      label: 'Tasks',
+      icon: Icons.assignment_outlined,
+      selectedIcon: Icons.assignment,
     ),
   ];
 
@@ -41,29 +45,43 @@ class _HomeShellState extends ConsumerState<HomeShell> {
       case 0:
         return const ChatScreen();
       case 1:
-        return const ConnectedDevicesScreen();
+        return const WorkspaceListScreen();
       default:
         return const ChatScreen();
     }
   }
 
+  void _onSelect(int i) {
+    setState(() => _selectedIndex = i);
+    Navigator.of(context).pop(); // close the drawer
+  }
+
   @override
   Widget build(BuildContext context) {
-    final pairingState = ref.watch(connectionStateProvider);
-    // Badge the "Connected Devices" entry when we have an active pairing
-    // (so the user notices the green dot after first pairing).
-    final showPairingBadge = pairingState is Paired;
+    final notesAsync = ref.watch(notesListProvider);
+    // Badge the Tasks entry when there's data and the user isn't on
+    // the Tasks tab right now. Simple proxy for "new since last visit".
+    final showTasksBadge = _selectedIndex != 1 &&
+        notesAsync.maybeWhen(
+          data: (n) => n.isNotEmpty,
+          orElse: () => false,
+        );
 
     return Scaffold(
       appBar: AppBar(
         title: Text(_destinations[_selectedIndex].label),
+        actions: [
+          if (_selectedIndex == 1)
+            IconButton(
+              icon: const Icon(Icons.add),
+              tooltip: 'New task',
+              onPressed: () => context.push('/workspace/new'),
+            ),
+        ],
       ),
       drawer: NavigationDrawer(
         selectedIndex: _selectedIndex,
-        onDestinationSelected: (i) {
-          setState(() => _selectedIndex = i);
-          Navigator.of(context).pop(); // close the drawer
-        },
+        onDestinationSelected: _onSelect,
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(28, 16, 28, 10),
@@ -74,13 +92,13 @@ class _HomeShellState extends ConsumerState<HomeShell> {
           ),
           for (var i = 0; i < _destinations.length; i++)
             NavigationDrawerDestination(
-              icon: i == 1 && showPairingBadge
+              icon: i == 1 && showTasksBadge
                   ? Badge(
                       smallSize: 8,
                       child: Icon(_destinations[i].icon),
                     )
                   : Icon(_destinations[i].icon),
-              selectedIcon: i == 1 && showPairingBadge
+              selectedIcon: i == 1 && showTasksBadge
                   ? Badge(
                       smallSize: 8,
                       child: Icon(_destinations[i].selectedIcon),

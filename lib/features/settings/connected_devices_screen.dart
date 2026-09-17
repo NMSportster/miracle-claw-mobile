@@ -1,6 +1,14 @@
 // connected_devices_screen.dart — Settings → Connected Devices.
 //
-// Spec: docs/specs/mobile-desktop-pairing.md § "Settings → Connected
+// @deprecated 2026-09-16: replaced by the MAIC per-user workspace model.
+// The pairing flow is no longer the primary mechanism for phone↔desktop
+// communication — that's now via MAIC's per-user workspace endpoints
+// (see lib/core/workspace/ and lib/features/workspace/). This file is
+// kept in git history per David's instruction ("we may need it later")
+// but is no longer routed to from anywhere in the app. See
+// memory/projects/workspace_architecture.md for the new model.
+//
+// Spec (legacy): docs/specs/mobile-desktop-pairing.md § "Settings → Connected
 // Devices page".
 //
 // v1 shows:
