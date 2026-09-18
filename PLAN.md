@@ -281,25 +281,51 @@ dependencies:
 
 **Manual test plan** (Phase 4): real physical phone + real desktop on same Wi-Fi. Android emulator does NOT support NSD; iOS Simulator may not surface the local-network permission dialog. No emulator-based end-to-end test possible.
 
-### Phase 4 — Standalone MAIC + Phone Power (~1 week)
+### Phase 4 — Verify existing connection, then ship the basics (~1 week)
 
-> **SUPERSEDED 2026-09-17.** The original Phase 4 below (FCM push notifications) was planned before the 2026-09-16/17 architecture pivot from mobile↔desktop pairing to MAIC-as-workspace bus. In the new model, the phone updates via MAIC's SSE stream inside the app; "chat.completed" and "tool.needs_approval" notification patterns no longer apply. The pairing code is preserved but deprecated; the workspace code is what ships.
+> **REPLACES 2026-09-17.** This is the new Phase 4. The original Phase 4 (FCM push) is preserved below as a strikethrough reference; do NOT implement it.
 >
-> **Replacement roadmap:** `memory/projects/mc-mobile-roadmap-2026-09.md` (in workspace memory). New phases 4/5/6 cover voice memo → text, photo OCR, daily summary, quick capture widgets, standing instructions for the desktop, project context notes, allowlisted direct commands, and the polish + customer pilot work. Read that doc — it's the source of truth from 2026-09-17 onward.
->
-> The original Phase 4 text is preserved below for historical reference; do NOT implement it.
+> **Source of truth:** `memory/projects/mc-mobile-roadmap-2026-09.md` § Phase 4. Read that first.
 
-~~Add FCM to project (see "Firebase setup" below)~~
-~~`services/push_service.dart` — register token on login, send to MAIC at `POST /v1/users/me/devices`~~
-~~Background handler: `firebase_messaging_background_handler`, defers to `sync_service` for outbox~~
-~~Two notification types:~~
-~~- `chat.completed` (reply ready, tap → open session)~~
-~~- `tool.needs_approval` (paid-tier tool requires user tap to execute)~~
-~~**Verification**: trigger a long chat from desktop, see phone notification, tap → opens session~~
+**Reality check (David, 2026-09-17 21:24 MDT):** Phone was already connecting to MAIC before this brainstorm. Most of the plumbing exists from the 2026-09-16/17 pivot. Phase 4 is verification + UX polish + small additions, not greenfield work.
+
+**Hard constraint:** Phone is a relay only — reads MAIC, writes notes. Desktop/laptop executes. No phone-side module runtime, no phone-side command executor, no phone-side FS access. Voice transcription happens in MAIC, not on phone.
+
+**Sub-Phase 4A — Verify the existing loop (1 day)**
+1. Smoke test on connected Android phone (`2a25c1c16f3f7ece`): login as test1@milagrocloud.com, see existing note from yesterday's smoke, create new note, verify via curl.
+2. Verify SSE stream refreshes the phone UI when notes change externally.
+3. Verify approval flow: create note with `needs_approval_for=["execute"]`, see phone show "needs approval", write approval from curl, see phone update.
+4. Bug bash the existing workspace UI; fix anything broken.
+5. Confirm pairing code (`pairing_*.rs` / `pairing_*.dart`) is dormant and not interfering.
+
+**Sub-Phase 4B — UX polish on existing screens (2 days)**
+6. Empty state for Tasks list ("Welcome to Tasks. Tap + to capture your first thought…").
+7. Loading + error states (5 standard states per screen).
+8. Note detail rendering per kind: `result` as card, `request` as "what you asked" card, `status` as timeline.
+9. Pagination (cursor on `last_updated_at`) for users with 50+ notes.
+10. Pull-to-refresh verification.
+11. Note delete with undo toast (5s).
+
+**Sub-Phase 4C — Capture without desktop (2 days)**
+12. MAIC: `POST /v1/users/me/workspace/notes` with `kind=voice_memo` + audio attachment + transcribe-on-write (Whisper). Audio auto-deletes after transcription.
+13. MAIC: `POST /v1/users/me/workspace/notes` with `kind=photo_ocr` + image attachment + OCR-on-write (Tesseract or cloud). Image auto-deletes after OCR.
+14. Mobile: `lib/features/capture/voice_capture_screen.dart`.
+15. Mobile: `lib/features/capture/photo_capture_screen.dart`.
+16. Mobile: `lib/features/capture/quick_capture_screen.dart` — inline text form for quick notes (in-app, not a system widget).
+
+**Sub-Phase 4D — Daily summary (1 day)**
+17. MAIC: Nightly cron `daily_summary.py` (03:30 UTC). Reads user's activity, calls MAIC's own chat completion with summarization prompt, writes `kind=daily_summary` note.
+18. Mobile: Daily summary card at top of Tasks list when present for today.
+
+**Verification:** End-to-end on the real phone against Hetzner MAIC. Test1 round-trip <10s, voice memo <30s, photo OCR <10s, daily summary by 4am local.
 
 ### Phase 5 — Standing Instructions + Desktop Commands (~2 weeks)
 
-> **See `memory/projects/mc-mobile-roadmap-2026-09.md` § Phase 5.** Customer writes persistent instructions to the desktop from the phone ("when idle, work on Project Acme"), projects context notes ("client changed scope — Phase 1 only"), and runs allowlisted direct commands ("run df -h", "screenshot", "restart dev server"). Requires MAIC schema extension (kind taxonomy + cadence + schedule + scope), MAIC scheduler, desktop-side idle detection + standing-instruction loop + context loader + command dispatcher, and mobile UI for standing instructions / context / quick commands. Steeler writes MAIC + mobile; Officebot wires the desktop. Permission model is the hardest part — strict allowlist, no free-form shell.
+> **See `memory/projects/mc-mobile-roadmap-2026-09.md` § Phase 5.** Customer writes persistent instructions to the desktop from the phone ("when idle, work on Project Acme"), project context notes ("client changed scope — Phase 1 only"), and allowlisted direct commands ("run df -h", "restart dev server"). Requires MAIC schema extension (kind taxonomy + cadence + schedule + scope), MAIC scheduler, desktop-side idle detection + standing-instruction loop + context loader + command dispatcher, and mobile UI for standing instructions / context / quick commands. Steeler writes MAIC + mobile; Officebot wires the desktop.
+>
+> **Gate:** Phase 5 doesn't start until the desktop workspace_sync polling loop is verified working on main-adeal's rc57.1 branch (currently reverted in `34b8791` because f7d7004 broke 5 lib.rs pairing_commands callers). Re-attempt the desktop fix before any Phase 5 work.
+>
+> **Strict allowlist:** No free-form shell from phone, ever. Only typed commands against customer's explicit allowlist (`df`, `screenshot`, `restart_service:dev_server`, etc.). Every new command kind requires security review + customer opt-in.
 
 ### Phase 6 — Polish + Real Customer Pilot (~2 weeks)
 
