@@ -3,13 +3,16 @@
 // session-archive bug found 2026-09-17 (commit d991316).
 //
 // The test stubs out:
-//   - secureStorageProvider: not used directly (we never read the JWT from
-//     storage in this test — JwtReader is overridden)
-//   - jwtReaderProvider: returns a fixed "expired" token
-//   - authRepositoryProvider: returns a FakeAuthRepository that flips a
-//     relogin flag and returns a "fresh" token
+//   - jwtReaderProvider: returns a fixed "expired" token (overridden via
+//     ProviderContainer).
 //   - The Dio HTTP transport: replaced with Dio's httpClientAdapter test
 //     hook, returning 401 on first call, 200 on the second.
+//   - The silent-relogin callback: installed via setReloginCallback()
+//     directly. We don't override authRepositoryProvider because that
+//     path goes through the Riverpod graph and the override would skip
+//     the setReloginCallback side-effect that wires the callback in
+//     production. setReloginCallback() is the same API the production
+//     code uses.
 
 import 'dart:async';
 import 'dart:convert';
@@ -19,38 +22,41 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:miracle_claw_mobile/core/api/api_client.dart';
-import 'package:miracle_claw_mobile/core/auth/auth_repository.dart';
+import 'package:miracle_claw_mobile/core/auth/jwt_reader.dart';
 
-class _FakeAuthRepository implements AuthRepository {
-  _FakeAuthRepository();
-
-  int reloginCallCount = 0;
-  String? lastSeenEmail;
-
-  @override
-  Future<bool> silentRelogin() async {
-    reloginCallCount++;
-    return true;
+class _ReloginCounter {
+  _ReloginCounter(this._result);
+  final bool _result;
+  int callCount = 0;
+  Future<bool> call() async {
+    callCount++;
+    return _result;
   }
-
-  // ── Unused members (compile-time surface only) ─────────────────────
-  @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      throw UnimplementedError(
-          'FakeAuthRepository: ${invocation.memberName} not stubbed');
 }
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  setUp(() {
+    // Clear any leftover callback from a previous test run.
+    clearReloginCallbackForTest();
+  });
+  tearDown(() {
+    clearReloginCallbackForTest();
+  });
+
   test('401 triggers silentRelogin + retry on the same request', () async {
     // Track every Authorization header the adapter sees.
     final authHeaders = <String?>[];
+    final relogin = _ReloginCounter(true);
 
-    final fakeAuth = _FakeAuthRepository();
+    // Install the silent-relogin callback before constructing the API
+    // client — same lifecycle as production (authRepositoryProvider
+    // installs it during construction, before any 401 can fire).
+    setReloginCallback(relogin.call);
+
     final container = ProviderContainer(overrides: [
       jwtReaderProvider.overrideWithValue(() async => 'expired-token'),
-      authRepositoryProvider.overrideWithValue(fakeAuth),
     ]);
 
     addTearDown(container.dispose);
@@ -78,7 +84,7 @@ void main() {
 
     expect(response.statusCode, 200);
     expect(response.data?['ok'], true);
-    expect(fakeAuth.reloginCallCount, 1,
+    expect(relogin.callCount, 1,
         reason: 'silentRelogin should run exactly once on a 401');
     expect(authHeaders.length, 2,
         reason: 'first request + retry, both carrying Authorization');
@@ -92,9 +98,11 @@ void main() {
   });
 
   test('relogin failure surfaces the original 401', () async {
+    final relogin = _ReloginCounter(false);
+    setReloginCallback(relogin.call);
+
     final container = ProviderContainer(overrides: [
       jwtReaderProvider.overrideWithValue(() async => 'expired-token'),
-      authRepositoryProvider.overrideWithValue(_AlwaysFailAuthRepository()),
     ]);
     addTearDown(container.dispose);
 
@@ -105,14 +113,17 @@ void main() {
 
     final response = await api.dio.get<Map<String, dynamic>>('/v1/ping');
     expect(response.statusCode, 401);
+    expect(relogin.callCount, 1,
+        reason: 'interceptor should attempt relogin on 401');
   });
 
   test('login endpoint 401 does NOT trigger relogin (avoids loop)',
       () async {
-    final fakeAuth = _FakeAuthRepository();
+    final relogin = _ReloginCounter(true);
+    setReloginCallback(relogin.call);
+
     final container = ProviderContainer(overrides: [
       jwtReaderProvider.overrideWithValue(() async => 'old-token'),
-      authRepositoryProvider.overrideWithValue(fakeAuth),
     ]);
     addTearDown(container.dispose);
 
@@ -121,10 +132,10 @@ void main() {
       _scripted(401, body: jsonEncode({'detail': 'Invalid credentials'})),
     ]);
 
-    final response = await api.dio
-        .post<Map<String, dynamic>>('/v1/users/login', data: {'email': 'x', 'password': 'y'});
+    final response = await api.dio.post<Map<String, dynamic>>(
+        '/v1/users/login', data: {'email': 'x', 'password': 'y'});
     expect(response.statusCode, 401);
-    expect(fakeAuth.reloginCallCount, 0,
+    expect(relogin.callCount, 0,
         reason: 'login failures must not loop into relogin');
   });
 }
@@ -170,13 +181,4 @@ class _AdapterResponse {
   _AdapterResponse(this.status, this.body);
   final int status;
   final String body;
-}
-
-class _AlwaysFailAuthRepository implements AuthRepository {
-  @override
-  Future<bool> silentRelogin() async => false;
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      throw UnimplementedError(invocation.memberName.toString());
 }

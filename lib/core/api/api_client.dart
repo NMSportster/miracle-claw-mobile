@@ -5,7 +5,7 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../auth/auth_repository.dart';
+import '../auth/jwt_reader.dart';
 import '../config/app_config.dart';
 import '../pairing/discovery_state.dart';
 import '../pairing/session.dart';
@@ -19,9 +19,9 @@ import '../pairing/transport.dart';
 /// can archive a JWT even when its `exp` is in the future. The phone
 /// stores JWTs persistently (flutter_secure_storage), so any in-flight
 /// 401 has to trigger a silent relogin + retry. That logic lives in
-/// [_AuthInterceptor.onError].
+/// [_AuthInterceptor.onResponse].
 class ApiClient {
-  ApiClient(this._ref, this._readToken)
+  ApiClient(this._readToken)
       : dio = Dio(BaseOptions(
           baseUrl: AppConfig.defaultMaicApiUrl,
           connectTimeout: AppConfig.defaultRequestTimeout,
@@ -34,18 +34,17 @@ class ApiClient {
           // Important: don't throw on 4xx so the interceptor can react.
           validateStatus: (status) => status != null && status < 500,
         )) {
-    dio.interceptors.add(_AuthInterceptor(dio: dio, ref: _ref, readToken: _readToken));
+    dio.interceptors.add(_AuthInterceptor(dio: dio, readToken: _readToken));
   }
 
-  final Ref _ref;
-  final Dio dio;
   final JwtReader _readToken;
+  final Dio dio;
 }
 
 /// Provider exposing the singleton ApiClient via Riverpod.
 final apiClientProvider = Provider<ApiClient>((ref) {
   final reader = ref.watch(jwtReaderProvider);
-  final client = ApiClient(ref, reader);
+  final client = ApiClient(reader);
 
   // Phase 3: attach the pairing interceptor so each request gets the
   // current ConnectionState's baseUrl + (when Paired) HMAC headers.
@@ -68,14 +67,9 @@ const String _kReloginRetried = '_mcReloginRetried';
 /// 401 — not just at bootstrap (which is where the original relogin
 /// lived, in `AuthRepository.tryRestore`).
 class _AuthInterceptor extends Interceptor {
-  _AuthInterceptor({
-    required this._dio,
-    required this._ref,
-    required this._readToken,
-  });
+  _AuthInterceptor({required this._dio, required this._readToken});
 
   final Dio _dio;
-  final Ref _ref;
   final JwtReader _readToken;
 
   // Single-flight guard: when many requests fail 401 concurrently, only
@@ -117,6 +111,8 @@ class _AuthInterceptor extends Interceptor {
 
     final ok = await _runRelogin();
     if (!ok) {
+      // ignore: avoid_print
+      print('[MC-AUTH] relogin failed for $path — surfacing 401');
       handler.next(response);
       return;
     }
@@ -131,8 +127,12 @@ class _AuthInterceptor extends Interceptor {
       response.requestOptions.extra[_kReloginRetried] = true;
 
       final retryResponse = await _dio.fetch<dynamic>(response.requestOptions);
+      // ignore: avoid_print
+      print('[MC-AUTH] $path: relogin ok, retry status=${retryResponse.statusCode}');
       handler.resolve(retryResponse);
-    } catch (_) {
+    } catch (e) {
+      // ignore: avoid_print
+      print('[MC-AUTH] $path: retry threw $e');
       handler.next(response);
     }
   }
@@ -140,14 +140,22 @@ class _AuthInterceptor extends Interceptor {
   /// Run silentRelogin exactly once across concurrent callers.
   Future<bool> _runRelogin() {
     final inflight = _inflightRelogin;
-    if (inflight != null) return inflight.future;
+    if (inflight != null) {
+      return inflight.future;
+    }
 
     final completer = Completer<bool>();
     _inflightRelogin = completer;
     () async {
       try {
-        final repo = _ref.read(authRepositoryProvider);
-        final ok = await repo.silentRelogin();
+        // Read the callback from the module-level holder (set by
+        // authRepositoryProvider when it constructs AuthRepository).
+        // This sidesteps the Riverpod static cycle
+        // (apiClientProvider ↔ authRepositoryProvider) — the
+        // interceptor never goes through Riverpod to find the
+        // callback.
+        final cb = getReloginCallback();
+        final ok = await cb();
         completer.complete(ok);
       } catch (_) {
         completer.complete(false);

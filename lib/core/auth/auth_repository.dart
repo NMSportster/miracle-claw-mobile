@@ -169,7 +169,23 @@ class AuthRepository {
 final authRepositoryProvider = Provider<AuthRepository>((ref) {
   final storage = ref.watch(secureStorageProvider);
   final api = ref.watch(apiClientProvider);
-  return AuthRepository(storage, api);
+  final repo = AuthRepository(storage, api);
+
+  // Wire the silent-relogin callback that ApiClient's auth interceptor
+  // calls on a 401. This sidesteps the Riverpod cycle (apiClientProvider
+  // ↔ authRepositoryProvider): ApiClient reads the callback through a
+  // module-level holder (see `setReloginCallback` in jwt_reader.dart),
+  // not via `ref.read(authRepositoryProvider)`. The callback is only
+  // invoked at 401-time, by which point both providers are constructed.
+  setReloginCallback(() async {
+    try {
+      return await repo.silentRelogin();
+    } catch (_) {
+      return false;
+    }
+  });
+
+  return repo;
 });
 
 /// StateNotifier exposing AuthState to the UI.
