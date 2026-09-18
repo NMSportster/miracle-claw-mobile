@@ -1,10 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../auth/jwt_reader.dart';
+import '../auth/auth_repository.dart';
 import '../config/app_config.dart';
 import '../pairing/discovery_state.dart';
 import '../pairing/session.dart';
@@ -13,8 +14,14 @@ import '../pairing/transport.dart';
 /// Holds the singleton Dio instance for the app. The auth interceptor reads
 /// the JWT via a JwtReader callback to avoid a circular dependency with
 /// AuthRepository (which needs Dio, which needs the reader).
+///
+/// Auth flow (2026-09-18): MAIC keeps an in-memory session registry that
+/// can archive a JWT even when its `exp` is in the future. The phone
+/// stores JWTs persistently (flutter_secure_storage), so any in-flight
+/// 401 has to trigger a silent relogin + retry. That logic lives in
+/// [_AuthInterceptor.onError].
 class ApiClient {
-  ApiClient(this._readToken)
+  ApiClient(this._ref, this._readToken)
       : dio = Dio(BaseOptions(
           baseUrl: AppConfig.defaultMaicApiUrl,
           connectTimeout: AppConfig.defaultRequestTimeout,
@@ -27,9 +34,10 @@ class ApiClient {
           // Important: don't throw on 4xx so the interceptor can react.
           validateStatus: (status) => status != null && status < 500,
         )) {
-    dio.interceptors.add(_AuthInterceptor(_readToken));
+    dio.interceptors.add(_AuthInterceptor(dio: dio, ref: _ref, readToken: _readToken));
   }
 
+  final Ref _ref;
   final Dio dio;
   final JwtReader _readToken;
 }
@@ -37,7 +45,7 @@ class ApiClient {
 /// Provider exposing the singleton ApiClient via Riverpod.
 final apiClientProvider = Provider<ApiClient>((ref) {
   final reader = ref.watch(jwtReaderProvider);
-  final client = ApiClient(reader);
+  final client = ApiClient(ref, reader);
 
   // Phase 3: attach the pairing interceptor so each request gets the
   // current ConnectionState's baseUrl + (when Paired) HMAC headers.
@@ -46,13 +54,33 @@ final apiClientProvider = Provider<ApiClient>((ref) {
   return client;
 });
 
-/// Interceptor that injects the JWT, and surfaces 4xx errors as typed
-/// ApiException. Silent relogin on 401 is handled at the AuthRepository level
-/// (a single refresh attempt before the call returns to the UI).
-class _AuthInterceptor extends Interceptor {
-  _AuthInterceptor(this._readToken);
+/// Internal flag we attach to a request that has already been retried
+/// after a relogin, so the interceptor doesn't loop forever.
+const String _kReloginRetried = '_mcReloginRetried';
 
+/// Interceptor that injects the JWT and, on 401, attempts one silent
+/// relogin and retries the request once before surfacing the error.
+///
+/// Why: MAIC's session registry archives entries on its own schedule,
+/// so a stored JWT can return "Session archived" even when its `exp`
+/// is in the future. Curl always re-logs-in → fresh JWT → 200. The
+/// phone, which stores the JWT persistently, must do the same on any
+/// 401 — not just at bootstrap (which is where the original relogin
+/// lived, in `AuthRepository.tryRestore`).
+class _AuthInterceptor extends Interceptor {
+  _AuthInterceptor({
+    required this._dio,
+    required this._ref,
+    required this._readToken,
+  });
+
+  final Dio _dio;
+  final Ref _ref;
   final JwtReader _readToken;
+
+  // Single-flight guard: when many requests fail 401 concurrently, only
+  // one relogin runs and the rest wait for the fresh JWT.
+  Completer<bool>? _inflightRelogin;
 
   @override
   Future<void> onRequest(
@@ -64,6 +92,70 @@ class _AuthInterceptor extends Interceptor {
       options.headers['Authorization'] = 'Bearer $token';
     }
     handler.next(options);
+  }
+
+  @override
+  Future<void> onResponse(
+    Response<dynamic> response,
+    ResponseInterceptorHandler handler,
+  ) async {
+    final status = response.statusCode;
+    final path = response.requestOptions.path;
+
+    // Only handle 401. Skip the login + logout endpoints so we don't
+    // infinite-loop on a bad password.
+    final isAuthEndpoint = path.contains('/v1/users/login') ||
+        path.contains('/v1/users/logout');
+
+    final alreadyRetried =
+        response.requestOptions.extra[_kReloginRetried] == true;
+
+    if (status != 401 || isAuthEndpoint || alreadyRetried) {
+      handler.next(response);
+      return;
+    }
+
+    final ok = await _runRelogin();
+    if (!ok) {
+      handler.next(response);
+      return;
+    }
+
+    try {
+      final fresh = await _readToken();
+      // Rebuild the request: refresh the JWT, mark it so a second 401
+      // surfaces instead of looping, and replay via the SAME dio so the
+      // httpClientAdapter + baseUrl stay correct.
+      response.requestOptions.headers['Authorization'] =
+          fresh != null && fresh.isNotEmpty ? 'Bearer $fresh' : null;
+      response.requestOptions.extra[_kReloginRetried] = true;
+
+      final retryResponse = await _dio.fetch<dynamic>(response.requestOptions);
+      handler.resolve(retryResponse);
+    } catch (_) {
+      handler.next(response);
+    }
+  }
+
+  /// Run silentRelogin exactly once across concurrent callers.
+  Future<bool> _runRelogin() {
+    final inflight = _inflightRelogin;
+    if (inflight != null) return inflight.future;
+
+    final completer = Completer<bool>();
+    _inflightRelogin = completer;
+    () async {
+      try {
+        final repo = _ref.read(authRepositoryProvider);
+        final ok = await repo.silentRelogin();
+        completer.complete(ok);
+      } catch (_) {
+        completer.complete(false);
+      } finally {
+        _inflightRelogin = null;
+      }
+    }();
+    return completer.future;
   }
 }
 
