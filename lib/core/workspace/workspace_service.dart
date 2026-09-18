@@ -206,8 +206,14 @@ class WorkspaceService {
         },
         // SSE responses are 200 only.
         validateStatus: (s) => s != null && s < 400,
-        // No overall timeout — SSE is long-lived.
-        receiveTimeout: Duration.zero,
+        // Override the global ApiClient timeouts so SSE doesn't hang
+        // forever on Android (Dio + Cloudflare HTTP/2 tunnel has a
+        // known issue where the connection stays open without parsed
+        // data). 20s is generous: if no chunk in 20s, abandon and
+        // let pump()'s catch switch to the poll fallback.
+        connectTimeout: const Duration(seconds: 10),
+        receiveTimeout: const Duration(seconds: 20),
+        sendTimeout: const Duration(seconds: 10),
       ),
     );
 
@@ -263,6 +269,9 @@ class WorkspaceService {
     StreamController<WorkspaceEvent> controller,
     List<int> lastSeen,
   ) async {
+    // Baseline idle interval between polls when nothing is happening.
+    // We don't want to hammer MAIC when the user is doing nothing.
+    const idlePollInterval = Duration(seconds: 3);
     while (!controller.isClosed) {
       try {
         // See listNotes() for why this is <dynamic>, not <List<dynamic>>.
@@ -270,11 +279,16 @@ class WorkspaceService {
           '/v1/users/me/workspace/poll',
           queryParameters: {
             'since_event_id': lastSeen[0],
-            'timeout_seconds': 30,
+            'timeout_seconds': 25,
           },
         );
+        if (controller.isClosed) break;
         if (r.statusCode == 204) {
-          // Timeout — no events. Loop and try again.
+          // No events — server-side long-poll timed out. Always sleep
+          // before retrying; the previous version did an immediate
+          // continue which, combined with SSE hanging on Android, drove
+          // MAIC's CF rate limit into the floor (~3 req/s sustained).
+          await Future.delayed(idlePollInterval);
           continue;
         }
         _checkStatus(r);
@@ -284,18 +298,21 @@ class WorkspaceService {
           await Future.delayed(const Duration(seconds: 2));
           continue;
         }
+        // Got events — process them then resume the idle cadence.
         for (final raw in data.cast<Map<String, dynamic>>()) {
           if (controller.isClosed) break;
           final ev = WorkspaceEvent.fromJson(raw);
           lastSeen[0] = ev.eventId;
           controller.add(ev);
         }
+        await Future.delayed(idlePollInterval);
       } on DioException catch (e) {
-        // Rate limit / transient — back off briefly, then retry.
+        // Rate limit / transient — back off briefly, then re-throw so
+        // the outer pump() loop can mark sseFailed and switch paths.
         if (e.response?.statusCode == 429) {
-          await Future.delayed(const Duration(seconds: 5));
+          await Future.delayed(const Duration(seconds: 30));
         } else {
-          await Future.delayed(const Duration(seconds: 1));
+          await Future.delayed(const Duration(seconds: 2));
         }
         throw _translate(e);
       }
