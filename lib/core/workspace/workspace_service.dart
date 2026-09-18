@@ -58,12 +58,22 @@ class WorkspaceService {
 
   /// `GET /v1/users/me/workspace` → list note summaries (newest first).
   Future<List<NoteSummary>> listNotes({int limit = 50, int offset = 0}) async {
-    final r = await _dio.get<List<dynamic>>(
+    // Use <dynamic>, not <List<dynamic>> — Dio's generic is an implicit
+    // cast on response construction, and if MAIC returns a non-list body
+    // (e.g. an error envelope on 429) the cast throws DioException
+    // (type=unknown, status=0), masking the real status code. With
+    // <dynamic> we let Dio parse loose, then safely cast here.
+    final r = await _dio.get<dynamic>(
       '/v1/users/me/workspace',
       queryParameters: {'limit': limit, 'offset': offset},
     );
     _checkStatus(r);
-    return r.data!
+    final data = r.data;
+    if (data is! List) {
+      throw WorkspaceException(r.statusCode ?? 0,
+          'expected list, got ${data.runtimeType}');
+    }
+    return data
         .cast<Map<String, dynamic>>()
         .map(NoteSummary.fromJson)
         .toList(growable: false);
@@ -255,7 +265,8 @@ class WorkspaceService {
   ) async {
     while (!controller.isClosed) {
       try {
-        final r = await _dio.get<List<dynamic>>(
+        // See listNotes() for why this is <dynamic>, not <List<dynamic>>.
+        final r = await _dio.get<dynamic>(
           '/v1/users/me/workspace/poll',
           queryParameters: {
             'since_event_id': lastSeen[0],
@@ -267,13 +278,25 @@ class WorkspaceService {
           continue;
         }
         _checkStatus(r);
-        for (final raw in r.data!.cast<Map<String, dynamic>>()) {
+        final data = r.data;
+        if (data is! List) {
+          // Non-list body — don't crash; back off briefly and loop.
+          await Future.delayed(const Duration(seconds: 2));
+          continue;
+        }
+        for (final raw in data.cast<Map<String, dynamic>>()) {
           if (controller.isClosed) break;
           final ev = WorkspaceEvent.fromJson(raw);
           lastSeen[0] = ev.eventId;
           controller.add(ev);
         }
       } on DioException catch (e) {
+        // Rate limit / transient — back off briefly, then retry.
+        if (e.response?.statusCode == 429) {
+          await Future.delayed(const Duration(seconds: 5));
+        } else {
+          await Future.delayed(const Duration(seconds: 1));
+        }
         throw _translate(e);
       }
     }

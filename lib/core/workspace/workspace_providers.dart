@@ -39,15 +39,27 @@ class NotesListController extends AsyncNotifier<List<NoteSummary>> {
   Future<List<NoteSummary>> build() async {
     // Subscribe to the change feed. Whenever an event arrives, schedule
     // a debounced refresh (200ms — coalesces rapid bursts).
+    //
+    // 2026-09-17 bugfix: events() returns a broadcast stream whose
+    // pump() adds errors via controller.addError() when SSE/poll fails
+    // (rate limit, transient network). Without an `onError` handler,
+    // Dart rethrows into the zone, which Riverpod catches and re-runs
+    // the AsyncNotifier — and because build() calls events() again,
+    // this became a feedback loop hitting MAIC at ~400ms cadence.
+    // The onError no-op below silences the loop; the underlying pump()
+    // logs the cause and continues retrying with backoff on its own.
     final svc = ref.watch(workspaceServiceProvider);
-    final sub = svc.events().listen((ev) {
-      // Only care about events — we don't filter, any change means
-      // re-fetch (the cost is small for 50 notes).
-      _refreshDebounce?.cancel();
-      _refreshDebounce = Timer(const Duration(milliseconds: 200), () {
-        ref.invalidateSelf();
-      });
-    });
+    final sub = svc.events().listen(
+      (ev) {
+        // Only care about events — we don't filter, any change means
+        // re-fetch (the cost is small for 50 notes).
+        _refreshDebounce?.cancel();
+        _refreshDebounce = Timer(const Duration(milliseconds: 200), () {
+          ref.invalidateSelf();
+        });
+      },
+      onError: (Object _) {/* swallow — pump() handles backoff/retry */},
+    );
     ref.onDispose(() {
       sub.cancel();
       _refreshDebounce?.cancel();
@@ -75,12 +87,16 @@ final notesListProvider = AsyncNotifierProvider<NotesListController, List<NoteSu
 /// without a round-trip (if it's already cached).
 final noteDetailProvider = FutureProvider.family<NoteDetail, String>((ref, noteId) async {
   // Also subscribe to the change feed for this specific note.
+  // See notesListController for why the onError no-op is required.
   final svc = ref.watch(workspaceServiceProvider);
-  final sub = svc.events().listen((ev) {
-    if (ev.noteId == noteId) {
-      ref.invalidateSelf();
-    }
-  });
+  final sub = svc.events().listen(
+    (ev) {
+      if (ev.noteId == noteId) {
+        ref.invalidateSelf();
+      }
+    },
+    onError: (Object _) {/* swallow — see notesListController */},
+  );
   ref.onDispose(sub.cancel);
   return svc.fetchNote(noteId);
 });
