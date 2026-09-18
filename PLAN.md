@@ -281,29 +281,31 @@ dependencies:
 
 **Manual test plan** (Phase 4): real physical phone + real desktop on same Wi-Fi. Android emulator does NOT support NSD; iOS Simulator may not surface the local-network permission dialog. No emulator-based end-to-end test possible.
 
-### Phase 4 — Push notifications + background sync (~1 day)
+### Phase 4 — Standalone MAIC + Phone Power (~1 week)
 
-- Add FCM to project (see "Firebase setup" below)
-- `services/push_service.dart` — register token on login, send to MAIC at `POST /v1/users/me/devices`
-- Background handler: `firebase_messaging_background_handler`, defers to `sync_service` for outbox
-- Two notification types:
-  - `chat.completed` (reply ready, tap → open session)
-  - `tool.needs_approval` (paid-tier tool requires user tap to execute)
-- **Verification**: trigger a long chat from desktop, see phone notification, tap → opens session
+> **SUPERSEDED 2026-09-17.** The original Phase 4 below (FCM push notifications) was planned before the 2026-09-16/17 architecture pivot from mobile↔desktop pairing to MAIC-as-workspace bus. In the new model, the phone updates via MAIC's SSE stream inside the app; "chat.completed" and "tool.needs_approval" notification patterns no longer apply. The pairing code is preserved but deprecated; the workspace code is what ships.
+>
+> **Replacement roadmap:** `memory/projects/mc-mobile-roadmap-2026-09.md` (in workspace memory). New phases 4/5/6 cover voice memo → text, photo OCR, daily summary, quick capture widgets, standing instructions for the desktop, project context notes, allowlisted direct commands, and the polish + customer pilot work. Read that doc — it's the source of truth from 2026-09-17 onward.
+>
+> The original Phase 4 text is preserved below for historical reference; do NOT implement it.
 
-### Phase 5 — Polish + ship (~2 days)
+~~Add FCM to project (see "Firebase setup" below)~~
+~~`services/push_service.dart` — register token on login, send to MAIC at `POST /v1/users/me/devices`~~
+~~Background handler: `firebase_messaging_background_handler`, defers to `sync_service` for outbox~~
+~~Two notification types:~~
+~~- `chat.completed` (reply ready, tap → open session)~~
+~~- `tool.needs_approval` (paid-tier tool requires user tap to execute)~~
+~~**Verification**: trigger a long chat from desktop, see phone notification, tap → opens session~~
 
-- Brand assets from `miracle-claw/brand/`
-- Adaptive icon (Android 12+)
-- Haptic feedback, error/empty/loading states
-- Accessibility: semantics labels, contrast, font scaling
-- Tablet layout (sessions list as side panel)
-- Build APK + AAB, sign with Miracle keystore
-- Play Store internal test track first
-- Privacy policy URL: `https://milagrocloud.com/privacy` (already exists per MEMORY)
-- Terms: `https://milagrocloud.com/terms`
+### Phase 5 — Standing Instructions + Desktop Commands (~2 weeks)
 
-**Total estimated effort**: ~9 dev days (5-6 calendar days solo)
+> **See `memory/projects/mc-mobile-roadmap-2026-09.md` § Phase 5.** Customer writes persistent instructions to the desktop from the phone ("when idle, work on Project Acme"), projects context notes ("client changed scope — Phase 1 only"), and runs allowlisted direct commands ("run df -h", "screenshot", "restart dev server"). Requires MAIC schema extension (kind taxonomy + cadence + schedule + scope), MAIC scheduler, desktop-side idle detection + standing-instruction loop + context loader + command dispatcher, and mobile UI for standing instructions / context / quick commands. Steeler writes MAIC + mobile; Officebot wires the desktop. Permission model is the hardest part — strict allowlist, no free-form shell.
+
+### Phase 6 — Polish + Real Customer Pilot (~2 weeks)
+
+> **See `memory/projects/mc-mobile-roadmap-2026-09.md` § Phase 6.** iOS scaffold completion, tablet layouts, accessibility, error/empty/loading states, haptics, build pipeline, onboarding flow, real customer pilot with 5-10 customers. Privacy policy + Terms.
+
+**Total estimated effort**: ~9 dev days for Phases 1–3 (shipped). Phase 4 (Standalone MAIC + Phone Power) ~5 days. Phase 5 (Standing Instructions + Desktop Commands) ~10 days. Phase 6 (Polish + Pilot) ~10 days. **Current roadmap: `memory/projects/mc-mobile-roadmap-2026-09.md`**.
 
 ---
 
