@@ -108,7 +108,7 @@ void main() {
 
     final api = container.read(apiClientProvider);
     api.dio.httpClientAdapter = _ScriptedAdapter(responses: [
-      _scripted(401, body: jsonEncode({'detail': 'Session archived'})),
+      _scripted(401, body: jsonEncode({'detail': 'Session archived — please log in again'})),
     ]);
 
     final response = await api.dio.get<Map<String, dynamic>>('/v1/ping');

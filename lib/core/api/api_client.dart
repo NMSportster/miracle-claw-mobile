@@ -57,6 +57,120 @@ final apiClientProvider = Provider<ApiClient>((ref) {
 /// after a relogin, so the interceptor doesn't loop forever.
 const String _kReloginRetried = '_mcReloginRetried';
 
+/// MAIC 401-response failure reasons, derived from the `detail` field the
+/// gateway returns. Extracted once (see [_classifyDetail]) so the
+/// interceptor can decide whether silentRelogin is worth trying.
+///
+/// Why this matters: previously every 401 from any cause hit the same
+/// relogin-then-retry path, with a single `[MC-AUTH] relogin failed ...`
+/// log line per failed request. When the underlying cause was a server
+/// bug (e.g. DB lookup fail-closed) or a malformed JWT, relogin had no
+/// chance of helping and the logs drowned out actionable signal. With
+/// classification, we:
+///   - Skip the relogin retry for irrecoverable causes (Bad token,
+///     Missing API key, Authentication service unavailable, Unknown).
+///   - Log a tag that names the cause so the next MAIC incident is
+///     obvious in `adb logcat` without code-diving.
+enum MAICAuthFailure {
+  /// JWT decoded but the principal's `user_credentials` row is not
+  /// `is_current` anymore. Re-login fixes by minting a fresh session
+  /// and rotating `is_current` to it.
+  sessionArchived,
+
+  /// Redis-cached revocation OR `expires_at` passed. Same fix: fresh
+  /// login gets a new session row.
+  sessionExpiredOrRevoked,
+
+  /// `user_credentials` lookup says this credential isn't the current
+  /// pointer. Same fix.
+  credentialArchived,
+
+  /// The underlying api_key / session row doesn't exist. Same fix:
+  /// silentRelogin creates a new one.
+  invalidCredential,
+
+  /// Auth DB call returned an exception (often the duplicate-row
+  /// bug from MEMORY 2026-09-18, where the principal-lookup CTE
+  /// errored). **NOT recoverable from the client** — server bug.
+  /// Surface immediately, log prominently, do NOT loop relogin.
+  authServiceUnavailable,
+
+  /// JWT signature failed or shape invalid. **NOT recoverable** —
+  /// stored JWT is corrupt or wrong issuer.
+  badToken,
+
+  /// No `Authorization` header reached the gateway. **NOT recoverable
+  /// from the interceptor** — its job is to add the header. Surface
+  /// as ApiException(statusCode: 401, ...) so upstream code can spot
+  /// the misconfig.
+  missingApiKey,
+
+  /// Login POST with bad email/password. Only seen on the auth
+  /// endpoint itself, which is in the interceptor's skip-list, but
+  /// classified for completeness.
+  invalidCredentials,
+
+  /// Anything else. Could be a new MAIC reason. Surface without
+  /// retrying; log the raw detail.
+  unknown,
+}
+
+MAICAuthFailure _classifyDetail(String? detail) {
+  if (detail == null) return MAICAuthFailure.unknown;
+  switch (detail) {
+    case 'Session archived — please log in again':
+      return MAICAuthFailure.sessionArchived;
+    case 'Session expired or revoked':
+      return MAICAuthFailure.sessionExpiredOrRevoked;
+    case 'Credential archived':
+      return MAICAuthFailure.credentialArchived;
+    case 'Invalid credential':
+      return MAICAuthFailure.invalidCredential;
+    case 'Authentication service unavailable':
+      return MAICAuthFailure.authServiceUnavailable;
+    case 'Bad token':
+      return MAICAuthFailure.badToken;
+    case 'Missing API key':
+      return MAICAuthFailure.missingApiKey;
+    case 'Invalid credentials':
+      return MAICAuthFailure.invalidCredentials;
+    default:
+      return MAICAuthFailure.unknown;
+  }
+}
+
+/// Recoverable failures are the ones that a fresh login will fix.
+bool _isReloginWorthTrying(MAICAuthFailure f) => switch (f) {
+      MAICAuthFailure.sessionArchived ||
+      MAICAuthFailure.sessionExpiredOrRevoked ||
+      MAICAuthFailure.credentialArchived ||
+      MAICAuthFailure.invalidCredential => true,
+      _ => false,
+    };
+
+/// Human-readable tag used in [print] logs so the cause jumps out.
+String _failureTag(MAICAuthFailure f) => switch (f) {
+      MAICAuthFailure.sessionArchived => 'session_archived',
+      MAICAuthFailure.sessionExpiredOrRevoked => 'session_expired_or_revoked',
+      MAICAuthFailure.credentialArchived => 'credential_archived',
+      MAICAuthFailure.invalidCredential => 'invalid_credential',
+      MAICAuthFailure.authServiceUnavailable => 'auth_service_unavailable',
+      MAICAuthFailure.badToken => 'bad_token',
+      MAICAuthFailure.missingApiKey => 'missing_api_key',
+      MAICAuthFailure.invalidCredentials => 'invalid_credentials',
+      MAICAuthFailure.unknown => 'unknown',
+    };
+
+/// Best-effort extract of the `detail` field from a Dio response body.
+/// MAIC's auth responses are `{ "detail": "..." }`; any other shape
+/// returns null and falls back to MAICAuthFailure.unknown.
+String? _extractDetail(Object? body) {
+  if (body is Map && body['detail'] is String) {
+    return body['detail'] as String;
+  }
+  return null;
+}
+
 /// Interceptor that injects the JWT and, on 401, attempts one silent
 /// relogin and retries the request once before surfacing the error.
 ///
@@ -109,10 +223,26 @@ class _AuthInterceptor extends Interceptor {
       return;
     }
 
+    // Classify the 401 by the gateway's `detail` string so we know
+    // whether silentRelogin is worth attempting (some failures are
+    // irrecoverable from the client and re-trying just adds noise).
+    final detail = _extractDetail(response.data);
+    final failure = _classifyDetail(detail);
+    final tag = _failureTag(failure);
+
+    if (!_isReloginWorthTrying(failure)) {
+      // ignore: avoid_print
+      print('[MC-AUTH] skip-relogin cause=$tag path=$path detail=$detail');
+      handler.next(response);
+      return;
+    }
+
+    // ignore: avoid_print
+    print('[MC-AUTH] cause=$tag path=$path — attempting silent relogin');
     final ok = await _runRelogin();
     if (!ok) {
       // ignore: avoid_print
-      print('[MC-AUTH] relogin failed for $path — surfacing 401');
+      print('[MC-AUTH] relogin failed cause=$tag path=$path — surfacing 401');
       handler.next(response);
       return;
     }
@@ -128,11 +258,11 @@ class _AuthInterceptor extends Interceptor {
 
       final retryResponse = await _dio.fetch<dynamic>(response.requestOptions);
       // ignore: avoid_print
-      print('[MC-AUTH] $path: relogin ok, retry status=${retryResponse.statusCode}');
+      print('[MC-AUTH] cause=$tag path=$path: relogin ok, retry status=${retryResponse.statusCode}');
       handler.resolve(retryResponse);
     } catch (e) {
       // ignore: avoid_print
-      print('[MC-AUTH] $path: retry threw $e');
+      print('[MC-AUTH] cause=$tag path=$path: retry threw $e');
       handler.next(response);
     }
   }
