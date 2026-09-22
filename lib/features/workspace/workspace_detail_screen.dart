@@ -1,17 +1,22 @@
 /// Workspace note detail screen. Shows all subkeys of one note and
 /// (when present) the desktop's result. Pulls the latest version on
 /// each entry, so as the desktop writes back the user sees updates.
+///
+/// 4B-8: per-subkey renderers (request / status / result / approval /
+/// history cards). Each subkey now has a custom layout instead of a
+/// generic JSON dump.
 library;
 
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import '../../core/workspace/note_model.dart';
 import '../../core/workspace/workspace_providers.dart';
+import '../../core/workspace/workspace_service.dart' show WorkspaceException;
+import 'workspace_states.dart';
 
 class WorkspaceDetailScreen extends ConsumerWidget {
   const WorkspaceDetailScreen({super.key, required this.noteId});
@@ -37,27 +42,22 @@ class WorkspaceDetailScreen extends ConsumerWidget {
       ),
       body: detailAsync.when(
         data: (detail) => _NoteDetailBody(detail: detail),
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.error_outline, size: 48, color: Colors.grey),
-              const SizedBox(height: 12),
-              Text('Failed to load: $e'),
-              const SizedBox(height: 12),
-              FilledButton.tonal(
-                onPressed: () => ref.invalidate(noteDetailProvider(noteId)),
-                child: const Text('Retry'),
-              ),
-            ],
-          ),
+        loading: () => const LoadingState(),
+        error: (e, _) => ErrorRetry(
+          message: e is WorkspaceException ? e.userMessage : 'Failed to load: $e',
+          onRetry: () => ref.invalidate(noteDetailProvider(noteId)),
         ),
       ),
     );
   }
 
   Future<void> _confirmDelete(BuildContext context, WidgetRef ref) async {
+    // Capture context-dependent objects BEFORE any await so we don't
+    // touch `context` past the dialog boundary (Flutter analyzer flags
+    // this as `use_build_context_synchronously`).
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -76,17 +76,82 @@ class WorkspaceDetailScreen extends ConsumerWidget {
       ),
     );
     if (confirmed != true) return;
+
+    // 4B-11: optimistic delete with 5s undo window.
+    //
+    // We fire the actual DELETE so the list provider re-fetches without
+    // the row, and offer the user a single-shot undo: if they tap it,
+    // we re-create the note by re-PUTting the request subkey. The
+    // desktop already had a cached copy so it picks up the restored row
+    // on its next poll.
+    final requestValue = _safeSnapshotRequestValue(ref);
+    final backupApproval = _safeSnapshotApprovalValue(ref);
+
     final result = await deleteNote(ref, noteId);
-    if (!context.mounted) return;
+
+    void restore() async {
+      if (requestValue == null && backupApproval == null) return;  // nothing to restore
+      if (requestValue != null) {
+        final r = await writeSubkey(ref, noteId: noteId, subkey: 'request', value: requestValue);
+        if (r is! MutationOk) {
+          messenger.showSnackBar(
+            const SnackBar(content: Text('Could not restore task.')),
+          );
+          return;
+        }
+      }
+      if (backupApproval != null) {
+        await writeSubkey(ref, noteId: noteId, subkey: 'approval', value: backupApproval);
+      }
+    }
+
     switch (result) {
       case MutationOk():
-        context.pop();
+        // Pop safely; if the navigator is gone we just stay where we are.
+        if (navigator.canPop()) navigator.pop();
+        messenger.clearSnackBars();
+        messenger.showSnackBar(
+          SnackBar(
+            content: const Text('Task deleted'),
+            duration: const Duration(seconds: 5),
+            action: (requestValue == null && backupApproval == null)
+                ? null
+                : SnackBarAction(
+                    label: 'Undo',
+                    onPressed: restore,
+                  ),
+          ),
+        );
       case MutationError(:final error):
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Delete failed: $error')));
+        messenger.showSnackBar(SnackBar(content: Text('Delete failed: $error')));
       case MutationQuotaExceeded():
-        // Deletion always frees quota, so this shouldn't fire — but if it does,
-        // the server is telling us something is wrong.
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Quota error: ${result.error}')));
+        messenger.showSnackBar(SnackBar(content: Text('Quota error: ${result.error}')));
+    }
+  }
+
+  /// Best-effort snapshot of the request subkey's value so we can put it
+  /// back if the user taps Undo within 5s.
+  Map<String, dynamic>? _safeSnapshotRequestValue(WidgetRef ref) {
+    try {
+      final async = ref.read(noteDetailProvider(noteId));
+      return async.maybeWhen(
+        data: (d) => d.subkeys['request']?.value,
+        orElse: () => null,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Map<String, dynamic>? _safeSnapshotApprovalValue(WidgetRef ref) {
+    try {
+      final async = ref.read(noteDetailProvider(noteId));
+      return async.maybeWhen(
+        data: (d) => d.subkeys['approval']?.value,
+        orElse: () => null,
+      );
+    } catch (_) {
+      return null;
     }
   }
 }
@@ -102,14 +167,14 @@ class _NoteDetailBody extends StatelessWidget {
     // Header: title from request subkey
     final title = noteTitleFromDetail(detail) ?? 'Untitled';
     final kind = noteKindFromDetail(detail) ?? 'note';
-    children.add(_Header(title: title, kind: kind, subkeys: detail.subkeys.keys.toList()));
+    children.add(_DetailHeader(title: title, kind: kind, subkeys: detail.subkeys.keys.toList()));
 
     // Subkey cards in fixed order
     const order = ['request', 'status', 'result', 'approval', 'history'];
     for (final sk in order) {
       final sub = detail.subkeys[sk];
       if (sub == null) continue;
-      children.add(_SubkeyCard(subkey: sub));
+      children.add(SubkeyCard(subkey: sub));
     }
 
     if (children.length == 1) {
@@ -126,8 +191,8 @@ class _NoteDetailBody extends StatelessWidget {
   }
 }
 
-class _Header extends StatelessWidget {
-  const _Header({required this.title, required this.kind, required this.subkeys});
+class _DetailHeader extends StatelessWidget {
+  const _DetailHeader({required this.title, required this.kind, required this.subkeys});
   final String title;
   final String kind;
   final List<String> subkeys;
@@ -144,14 +209,12 @@ class _Header extends StatelessWidget {
             style: Theme.of(context).textTheme.headlineSmall,
           ),
           const SizedBox(height: 4),
-          Row(
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
             children: [
               _chip(context, kind),
-              const SizedBox(width: 8),
-              for (final sk in subkeys) ...[
-                _chip(context, sk, secondary: true),
-                const SizedBox(width: 6),
-              ],
+              for (final sk in subkeys) _chip(context, sk, secondary: true),
             ],
           ),
         ],
@@ -180,8 +243,17 @@ class _Header extends StatelessWidget {
   }
 }
 
-class _SubkeyCard extends StatelessWidget {
-  const _SubkeyCard({required this.subkey});
+/// Card for one subkey. Dispatches to a type-specific renderer based on
+/// the subkey name; unknown subkeys fall back to pretty-printed JSON.
+///
+/// 4B-8 per-subkey layout:
+///   request  — what the user/phone asked for (kind, title, text, needs_approval_for)
+///   status   — desktop progress timeline (state, message, percent)
+///   result   — desktop output (summary, details, attachments)
+///   approval — explicit approve/deny or pending state
+///   history  — append-only log; render as timeline
+class SubkeyCard extends StatelessWidget {
+  const SubkeyCard({super.key, required this.subkey});
   final SubkeyContent subkey;
 
   @override
@@ -204,15 +276,20 @@ class _SubkeyCard extends StatelessWidget {
                   ),
                   const Spacer(),
                   Text(
+                    'by $by',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
                     'v${subkey.version} · $updatedAt',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
               ),
-              const SizedBox(height: 4),
-              Text('by $by', style: Theme.of(context).textTheme.bodySmall),
-              const Divider(),
-              _renderValue(context, subkey.value),
+              const SizedBox(height: 8),
+              const Divider(height: 1),
+              const SizedBox(height: 12),
+              _renderValue(context, subkey),
             ],
           ),
         ),
@@ -220,30 +297,41 @@ class _SubkeyCard extends StatelessWidget {
     );
   }
 
-  Widget _renderValue(BuildContext context, Map<String, dynamic> value) {
-    if (subkey.subkey == 'result') {
-      return _renderResult(context, value);
+  Widget _renderValue(BuildContext context, SubkeyContent subkey) {
+    switch (subkey.subkey) {
+      case 'request':
+        return _renderRequest(context, subkey.value);
+      case 'status':
+        return _renderStatus(context, subkey.value);
+      case 'result':
+        return _renderResult(context, subkey.value);
+      case 'approval':
+        return _renderApproval(context, subkey.value);
+      case 'history':
+        return _renderHistory(context, subkey.value);
+      default:
+        return _renderGeneric(context, subkey.value);
     }
-    if (subkey.subkey == 'request') {
-      return _renderRequest(context, value);
-    }
-    // Generic: pretty-print the JSON
-    return SelectableText(
-      const JsonEncoder.withIndent('  ').convert(value),
-      style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-    );
   }
 
   Widget _renderRequest(BuildContext context, Map<String, dynamic> v) {
     final title = v['title'] as String?;
     final text = v['text'] as String?;
-    final needsApproval = (v['needs_approval_for'] as List?)?.cast<String>() ?? const [];
+    final kind = v['kind'] as String?;
+    final needsApproval = ((v['needs_approval_for'] as List?) ?? const [])
+        .map((e) => e.toString())
+        .toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (kind != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Text('Kind: $kind', style: Theme.of(context).textTheme.bodySmall),
+          ),
         if (title != null)
           Padding(
-            padding: const EdgeInsets.only(bottom: 4),
+            padding: const EdgeInsets.only(bottom: 6),
             child: Text(title, style: Theme.of(context).textTheme.titleMedium),
           ),
         if (text != null)
@@ -268,9 +356,50 @@ class _SubkeyCard extends StatelessWidget {
     );
   }
 
+  Widget _renderStatus(BuildContext context, Map<String, dynamic> v) {
+    final state = (v['state'] ?? v['status'] ?? 'unknown').toString();
+    final message = v['message']?.toString();
+    final percent = (v['percent'] is num) ? (v['percent'] as num).toInt() : null;
+    final color = _statusColor(state, context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(_statusIcon(state), color: color, size: 18),
+            const SizedBox(width: 6),
+            Text(
+              state,
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(color: color),
+            ),
+          ],
+        ),
+        if (message != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 6, bottom: 6),
+            child: Text(message),
+          ),
+        if (percent != null) ...[
+          const SizedBox(height: 4),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(value: (percent / 100).clamp(0.0, 1.0), minHeight: 6),
+          ),
+          const SizedBox(height: 4),
+          Text('$percent%', style: Theme.of(context).textTheme.bodySmall),
+        ],
+      ],
+    );
+  }
+
   Widget _renderResult(BuildContext context, Map<String, dynamic> v) {
-    final summary = v['summary'] as String?;
-    final details = v['details'] as String?;
+    final summary = v['summary']?.toString();
+    final details = v['details']?.toString();
+    final attachmentList = ((v['attachments'] as List?) ?? const [])
+        .cast<Map>()
+        .map((m) => m['name']?.toString())
+        .whereType<String>()
+        .toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -280,7 +409,171 @@ class _SubkeyCard extends StatelessWidget {
             child: Text(summary, style: Theme.of(context).textTheme.bodyLarge),
           ),
         if (details != null) Text(details),
+        if (attachmentList.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: [
+                for (final a in attachmentList)
+                  Chip(
+                    avatar: const Icon(Icons.attach_file, size: 16),
+                    label: Text(a),
+                    visualDensity: VisualDensity.compact,
+                  ),
+              ],
+            ),
+          ),
       ],
     );
+  }
+
+  Widget _renderApproval(BuildContext context, Map<String, dynamic> v) {
+    final approved = v['approved'] == true;
+    final denied = v['approved'] == false;
+    final approver = v['approver']?.toString();
+    final reason = v['reason']?.toString();
+
+    final color = approved
+        ? Theme.of(context).colorScheme.tertiary
+        : denied
+            ? Theme.of(context).colorScheme.error
+            : Theme.of(context).colorScheme.secondary;
+    final icon = approved
+        ? Icons.check_circle
+        : denied
+            ? Icons.cancel
+            : Icons.hourglass_top;
+    final label = approved ? 'Approved' : denied ? 'Denied' : 'Pending';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(icon, color: color, size: 18),
+            const SizedBox(width: 6),
+            Text(label, style: Theme.of(context).textTheme.titleSmall?.copyWith(color: color)),
+          ],
+        ),
+        if (approver != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text('by $approver', style: Theme.of(context).textTheme.bodySmall),
+          ),
+        if (reason != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(reason),
+          ),
+      ],
+    );
+  }
+
+  Widget _renderHistory(BuildContext context, Map<String, dynamic> v) {
+    // history can be a raw list OR a {entries: [...]} envelope
+    dynamic raw = v['entries'] ?? v;
+    if (raw is! List) raw = const <dynamic>[];
+    final entries = raw;
+
+    if (entries.isEmpty) {
+      return Text('No history yet.', style: Theme.of(context).textTheme.bodySmall);
+    }
+    final fmt = DateFormat.yMMMd().add_jm();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (int i = 0; i < entries.length; i++) ...[
+          Builder(builder: (_) {
+            final item = entries[i];
+            String label = 'event';
+            DateTime? at;
+            if (item is Map) {
+              final evt = item['event']?.toString();
+              final msg = item['message']?.toString();
+              label = (evt != null && evt.isNotEmpty)
+                  ? evt
+                  : (msg != null && msg.isNotEmpty ? msg : 'event');
+              final atRaw = item['at'];
+              if (atRaw != null) {
+                try { at = DateTime.parse(atRaw.toString()).toLocal(); } catch (_) {}
+              }
+            } else {
+              label = item.toString();
+            }
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Icon(Icons.circle, size: 8, color: Theme.of(context).colorScheme.primary),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(label, style: Theme.of(context).textTheme.bodyMedium),
+                      if (at != null)
+                        Text(fmt.format(at), style: Theme.of(context).textTheme.bodySmall),
+                    ],
+                  ),
+                ),
+              ],
+            );
+          }),
+          if (i < entries.length - 1) const SizedBox(height: 10),
+        ],
+      ],
+    );
+  }
+
+  Widget _renderGeneric(BuildContext context, Map<String, dynamic> v) {
+    return SelectableText(
+      const JsonEncoder.withIndent('  ').convert(v),
+      style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+    );
+  }
+
+  Color _statusColor(String state, BuildContext context) {
+    switch (state) {
+      case 'done':
+      case 'completed':
+      case 'success':
+      case 'finished':
+        return Theme.of(context).colorScheme.tertiary;
+      case 'error':
+      case 'failed':
+        return Theme.of(context).colorScheme.error;
+      case 'running':
+      case 'in_progress':
+      case 'started':
+        return Theme.of(context).colorScheme.primary;
+      default:
+        return Theme.of(context).colorScheme.onSurfaceVariant;
+    }
+  }
+
+  IconData _statusIcon(String state) {
+    switch (state) {
+      case 'done':
+      case 'completed':
+      case 'success':
+      case 'finished':
+        return Icons.check_circle_outline;
+      case 'error':
+      case 'failed':
+        return Icons.error_outline;
+      case 'running':
+      case 'in_progress':
+      case 'started':
+        return Icons.hourglass_top;
+      case 'queued':
+      case 'pending':
+        return Icons.schedule;
+      default:
+        return Icons.info_outline;
+    }
   }
 }

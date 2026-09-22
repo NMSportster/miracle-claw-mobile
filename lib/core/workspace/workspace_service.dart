@@ -373,6 +373,38 @@ class WorkspaceException implements Exception {
 
   @override
   String toString() => 'WorkspaceException($statusCode): $message';
+
+  /// User-facing message. Prefer this in the UI over [toString].
+  ///
+  /// Before this, screens showed e.g. "Failed to load:
+  /// WorkspaceException(429): Too Many Requests" — accurate, but
+  /// leaked the exception class name and the raw HTTP status. Now we
+  /// produce a short, friendly line; fall back to the server message
+  /// for anything we don't recognise.
+  String get userMessage {
+    switch (statusCode) {
+      case 429:
+        return 'You\'re doing that too fast. Try again in a minute.';
+      case 503:
+      case 502:
+      case 504:
+        return 'Server temporarily unavailable. Try again shortly.';
+      case 401:
+        return 'Your session expired. Please sign in again.';
+      case 403:
+        return 'You don\'t have access to that task.';
+      case 404:
+        return 'That task no longer exists.';
+      case 413:
+        return 'Your workspace is full.';
+      case 500:
+        return 'Server error. Try again or check back later.';
+      default:
+        if (statusCode >= 500) return 'Server error ($statusCode).';
+        if (statusCode >= 400) return 'Request rejected ($statusCode).';
+        return message;
+    }
+  }
 }
 
 /// Thrown when a write would exceed the user's tier quota. Carries the
