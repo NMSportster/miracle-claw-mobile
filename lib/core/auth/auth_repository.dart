@@ -148,16 +148,23 @@ class AuthRepository {
     await _storage.delete(key: _kRememberPassword);
   }
 
-  /// Boot-time restore. Tries cached JWT first; on success, validates it
-  /// by fetching /v1/users/me. If invalid, attempts silent relogin.
+  /// Boot-time restore. Three paths:
+  ///   1. Stored JWT + works → return user (silent).
+  ///   2. Stored JWT + 401 → drop JWT, try silentRelogin with cached creds.
+  ///   3. No stored JWT but cached creds (from a previous
+  ///      "Stay signed in") → silentRelogin directly. UI should pre-fill
+  ///      the email field with `readRememberedEmail()`.
+  /// Returns null only when nothing useful is on disk.
   Future<UserProfile?> tryRestore() async {
     final token = await _storage.read(key: kAccessTokenKey);
-    if (token == null || token.isEmpty) return null;
 
-    final me = await fetchMe();
-    if (me != null) return me;
+    if (token != null && token.isNotEmpty) {
+      final me = await fetchMe();
+      if (me != null) return me;
+    }
 
-    // Cached token rejected — try silent relogin with cached creds.
+    // Either there was no stored JWT, or the stored one was 401'd.
+    // Either way: try the cached credentials.
     if (await silentRelogin()) {
       return fetchMe();
     }
