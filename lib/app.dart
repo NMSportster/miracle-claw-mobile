@@ -8,6 +8,9 @@ import 'features/auth/login_screen.dart';
 import 'features/shell/home_shell.dart';
 import 'features/workspace/workspace_create_screen.dart';
 import 'features/workspace/workspace_detail_screen.dart';
+import 'features/capture/voice_capture_screen.dart';
+import 'features/capture/photo_capture_screen.dart';
+import 'features/capture/quick_capture_screen.dart';
 
 /// Top-level app widget. Sets up Material 3 dark theme + router that reacts to
 /// auth state changes. Workspace discovery is started/stopped by the auth
@@ -98,6 +101,10 @@ final routerProvider = Provider<GoRouter>((ref) {
           noteId: state.pathParameters['noteId']!,
         ),
       ),
+      // Phase 4C capture screens.
+      GoRoute(path: '/capture/voice', builder: (_, _) => const VoiceCaptureScreen()),
+      GoRoute(path: '/capture/photo', builder: (_, _) => const PhotoCaptureScreen()),
+      GoRoute(path: '/capture/quick', builder: (_, _) => const QuickCaptureScreen()),
     ],
   );
 });

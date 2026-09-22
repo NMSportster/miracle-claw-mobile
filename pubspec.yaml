@@ -1,7 +1,7 @@
 name: miracle_claw_mobile
 description: "Miracle Claw mobile companion — Android + iOS chat client for MAIC + paired desktop gateway"
 publish_to: 'none'
-version: 1.3.0+5
+version: 1.4.0+6
 
 environment:
   sdk: ^3.12.2
@@ -38,6 +38,14 @@ dependencies:
 
   # Voice input (Phase 2 — declared now so it's available)
   speech_to_text: ^7.0.0
+
+  # Audio capture for voice memos (Phase 4C — raw audio to MAIC for
+  # server-side Whisper transcription, NOT on-device STT).
+  record: ^5.1.2
+  # Image capture for photo OCR (Phase 4C — raw image to MAIC for
+  # server-side Tesseract OCR).
+  image_picker: ^1.1.2
+  audio_session: ^0.1.21  # for record permission flow
 
   # Date/time formatting in workspace screens (detail card timestamps)
   intl: ^0.19.0

@@ -1,4 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Phase 4C capture screens: voice memos (Whisper on MAIC), photo OCR
+         (Tesseract on MAIC). Per the phone-is-a-relay rule, audio + image
+         bytes are uploaded to MAIC; the phone doesn't run any local model. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
+    <uses-feature android:name="android.hardware.microphone" android:required="false"/>
+
     <application
         android:label="miracle_claw_mobile"
         android:name="${applicationName}"

@@ -71,12 +71,23 @@ class _HomeShellState extends ConsumerState<HomeShell> {
       appBar: AppBar(
         title: Text(_destinations[_selectedIndex].label),
         actions: [
-          if (_selectedIndex == 1)
+          if (_selectedIndex == 1) ...[
+            IconButton(
+              icon: const Icon(Icons.mic_none_outlined),
+              tooltip: 'Voice memo',
+              onPressed: () => context.push('/capture/voice'),
+            ),
+            IconButton(
+              icon: const Icon(Icons.photo_camera_outlined),
+              tooltip: 'Photo OCR',
+              onPressed: () => context.push('/capture/photo'),
+            ),
             IconButton(
               icon: const Icon(Icons.add),
               tooltip: 'New task',
               onPressed: () => context.push('/workspace/new'),
             ),
+          ],
         ],
       ),
       drawer: NavigationDrawer(
