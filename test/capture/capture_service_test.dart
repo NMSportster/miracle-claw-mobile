@@ -15,18 +15,7 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:miracle_claw_mobile/core/api/api_client.dart';
 import 'package:miracle_claw_mobile/core/capture/capture_service.dart';
-
-/// Minimal ApiClient stub. We don't need the real one because
-/// CaptureService only uses Dio; we plug our own Dio in via
-/// the constructor in the test.
-class _StubApiClient implements ApiClient {
-  @override
-  Dio get dio => throw UnimplementedError();
-  @override
-  noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
-}
 
 /// Hand-rolled mock adapter that captures the request and returns a
 /// canned response. Much lighter than http_mock_adapter for what we
