@@ -41,7 +41,12 @@ dependencies:
 
   # Audio capture for voice memos (Phase 4C — raw audio to MAIC for
   # server-side Whisper transcription, NOT on-device STT).
-  record: ^5.1.2
+  # Pinned to ^5.1.2 originally, but record_linux 0.7.2 (its transitive peer)
+  # is broken on pub.dev: it doesn't implement startStream that the interface
+  # declares since 1.0.2. We don't build for Linux but Dart still compiles it.
+  # 6.0.0+ requires record_linux ^1.0.0 (the unbroken line). 7.1.1 needs
+  # Flutter 3.44+ (we have 3.44.2) and Dart 3.12+ (we have 3.12.2).
+  record: ^7.1.1
   # Image capture for photo OCR (Phase 4C — raw image to MAIC for
   # server-side Tesseract OCR).
   image_picker: ^1.1.2
@@ -77,6 +82,9 @@ dependencies:
   # Utilities
   collection: ^1.18.0
   logging: ^1.3.0
+
+# (no overrides needed once record is on 7.1.1 — record_linux ^2.1.0 pulls
+#  a version compatible with record_platform_interface 2.x.)
 
 dev_dependencies:
   flutter_test:
