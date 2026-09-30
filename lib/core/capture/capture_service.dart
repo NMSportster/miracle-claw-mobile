@@ -7,11 +7,10 @@
 /// as a note the user can open in Tasks.
 ///
 /// Endpoints (added by Phase 4C):
-///   POST /v1/users/me/workspace/notes
-///     multipart/form-data:
-///       kind="voice_memo" or "photo_ocr"
-///       file: [bytes]
-///     response: NoteSummaryOut (new note)
+///   POST /v1/users/me/workspace/notes/voice  multipart with 'audio' field
+///   POST /v1/users/me/workspace/notes/photo  multipart with 'image' field
+///   Each writes a kind={voice_memo|photo_ocr} note with the result in
+///   the 'result' subkey. Raw bytes are NOT persisted.
 library;
 
 import 'dart:io';
@@ -45,45 +44,50 @@ class CaptureService {
   final Dio _dio;
 
   /// Upload a voice memo audio file. MAIC will run Whisper on it server-
-  /// side and write a note with `{transcript, audio_deleted: true}` in
-  /// the `request` subkey. The audio bytes do NOT persist in the
-  /// workspace (per roadmap product rule: free tier would burn fast).
+  /// side and write a note with the transcript in the `result` subkey.
+  /// The audio bytes do NOT persist in the workspace.
+  ///
+  /// 2026-09-29: endpoint is /notes/voice (not /notes) — server has two
+  /// dedicated routes, one per kind, gated by separate env flags. The
+  /// response is the WriteAck of the 'result' subkey, not a NoteSummary.
   Future<CaptureResult> uploadVoiceMemo(File audioFile) async {
     return _upload(
-      kind: 'voice_memo',
+      endpoint: '/v1/users/me/workspace/notes/voice',
       file: audioFile,
       filename: 'voice_memo.m4a',
       mimeType: 'audio/m4a',
+      fieldName: 'audio',
     );
   }
 
   /// Upload a photo for OCR. MAIC runs Tesseract server-side and writes
-  /// a note with `{ocr_text, image_deleted: true}` in `request`.
+  /// a note with the OCR text in the `result` subkey.
   Future<CaptureResult> uploadPhoto(File imageFile) async {
     return _upload(
-      kind: 'photo_ocr',
+      endpoint: '/v1/users/me/workspace/notes/photo',
       file: imageFile,
       filename: 'photo.jpg',
       mimeType: 'image/jpeg',
+      fieldName: 'image',
     );
   }
 
   Future<CaptureResult> _upload({
-    required String kind,
+    required String endpoint,
     required File file,
     required String filename,
     required String mimeType,
+    required String fieldName,
   }) async {
     try {
       final form = FormData.fromMap({
-        'kind': kind,
-        'file': await MultipartFile.fromFile(
+        fieldName: await MultipartFile.fromFile(
           file.path,
           filename: filename,
         ),
       });
       final r = await _dio.post<Map<String, dynamic>>(
-        '/v1/users/me/workspace/notes',
+        endpoint,
         data: form,
         options: Options(
           contentType: 'multipart/form-data',
@@ -97,18 +101,25 @@ class CaptureService {
       if (data == null) {
         return CaptureResult.err('Empty response from server');
       }
-      // Backend returns a single NoteSummaryOut after creation. Convert.
+      // Backend returns WriteAck: {note_id, subkey, size_bytes, version, updated_at}
+      final noteId = data['note_id']?.toString() ?? '';
+      if (noteId.isEmpty) {
+        return CaptureResult.err('Missing note_id in response');
+      }
+      // The new note has exactly one subkey ('result'). Synthesize a
+      // NoteSummary so the existing UI flows (refresh list, navigate)
+      // work without further plumbing.
       final note = NoteSummary(
-        noteId: data['note_id']?.toString() ?? '',
-        subkeys: ((data['subkeys'] as List?) ?? const [])
-            .map((e) => e.toString())
-            .toList(),
-        totalBytes: (data['total_bytes'] as num?)?.toInt() ?? 0,
-        lastUpdatedAt: data['last_updated_at'] != null
-            ? DateTime.tryParse(data['last_updated_at'].toString()) ?? DateTime.now()
+        noteId: noteId,
+        subkeys: const ['result'],
+        totalBytes: (data['size_bytes'] as num?)?.toInt() ?? 0,
+        lastUpdatedAt: data['updated_at'] != null
+            ? DateTime.tryParse(data['updated_at'].toString()) ?? DateTime.now()
             : DateTime.now(),
-        lastUpdatedBy: data['last_updated_by']?.toString(),
-        requestKind: data['request_kind']?.toString(),
+        lastUpdatedBy: 'phone:capture',
+        requestKind: endpoint.endsWith('/voice')
+            ? 'voice_memo'
+            : (endpoint.endsWith('/photo') ? 'photo_ocr' : null),
       );
       return CaptureResult.ok(note);
     } on DioException catch (e) {
@@ -116,9 +127,17 @@ class CaptureService {
       // Dio interceptor will have already attempted relogin for
       // recoverable cases; whatever survived is what we show.
       final status = e.response?.statusCode;
-      final detail = (e.response?.data is Map)
-          ? (e.response!.data['detail']?.toString() ?? '')
-          : '';
+      String detail = '';
+      final d = e.response?.data;
+      if (d is Map) {
+        final det = d['detail'];
+        if (det is String) {
+          detail = det;
+        } else if (det is Map && det['error'] != null) {
+          // Our capture endpoints use {detail: {error: "...", feature: "..."}}
+          detail = '${det['error']} (${det['feature']})';
+        }
+      }
       final msg = detail.isNotEmpty
           ? detail
           : 'Upload failed (${status ?? "no status"})';

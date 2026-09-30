@@ -22,6 +22,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
 import '../../core/capture/capture_service.dart';
@@ -65,6 +66,11 @@ class _VoiceCaptureScreenState extends ConsumerState<VoiceCaptureScreen> {
     }
 
     try {
+      // 2026-09-29: relative path 'voice_memo_*.m4a' broke under record ^7.1.1
+      // because the package now refuses to write into the read-only app sandbox
+      // (MediaMuxer throws EROFS). Use the app's documents dir instead.
+      final dir = await getApplicationDocumentsDirectory();
+      final path = '${dir.path}/voice_memo_${DateTime.now().millisecondsSinceEpoch}.m4a';
       await _recorder.start(
         const RecordConfig(
           encoder: AudioEncoder.aacLc,
@@ -74,7 +80,7 @@ class _VoiceCaptureScreenState extends ConsumerState<VoiceCaptureScreen> {
           sampleRate: 16000,
           numChannels: 1,
         ),
-        path: 'voice_memo_${DateTime.now().millisecondsSinceEpoch}.m4a',
+        path: path,
       );
       // After start() resolves, the recorder is active and writing to
       // the path we provided. We have no Future<String?> return to
@@ -88,7 +94,7 @@ class _VoiceCaptureScreenState extends ConsumerState<VoiceCaptureScreen> {
       });
       setState(() {
         _recording = true;
-        _audioPath = 'voice_memo_${_recordStart!.millisecondsSinceEpoch}.m4a';
+        _audioPath = path;
         _duration = Duration.zero;
       });
     } catch (e) {
