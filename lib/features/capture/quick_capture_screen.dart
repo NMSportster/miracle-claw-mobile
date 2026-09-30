@@ -86,15 +86,16 @@ class _QuickCaptureScreenState extends ConsumerState<QuickCaptureScreen> {
     setState(() => _submitting = false);
 
     switch (result) {
-      case MutationOk():
-        // Vibrate briefly to confirm capture (haptic is v2; for now we
-        // dismiss back). The user lands on Tasks list where the new note
-        // shows at the top.
+      case MutationOk(:final ack):
+        // Navigate to the detail view of the newly-created note so the
+        // user can immediately edit it (matches voice/photo screens —
+        // 2026-09-29). Previously this went to /workspace (the list),
+        // which hid the new note behind a tap.
         HapticFeedback.lightImpact();
         if (context.canPop()) {
           context.pop();
         } else {
-          context.go('/workspace');
+          context.go('/workspace/${ack.noteId}');
         }
       case MutationQuotaExceeded(:final error):
         showDialog<void>(
