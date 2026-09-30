@@ -162,16 +162,26 @@ class WorkspaceService {
     var sseFailed = false;
 
     Future<void> pump() async {
+      var pumpIter = 0;
       while (!controller.isClosed) {
+        pumpIter++;
         try {
           if (!sseFailed) {
+            // ignore: avoid_print
+            print('[DBG-WS] pump iter=$pumpIter trying SSE');
             await _pumpSse(controller, lastSeen);
+            // ignore: avoid_print
+            print('[DBG-WS] pump iter=$pumpIter SSE returned cleanly');
           } else {
+            // ignore: avoid_print
+            print('[DBG-WS] pump iter=$pumpIter using POLL (sseFailed=true)');
             await _pumpPoll(controller, lastSeen);
             // After a few successful polls, try SSE again.
             sseFailed = false;
           }
         } catch (e) {
+          // ignore: avoid_print
+          print('[DBG-WS] pump iter=$pumpIter error: $e');
           if (!controller.isClosed) {
             controller.addError(e);
           }

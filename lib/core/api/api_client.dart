@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../auth/jwt_reader.dart';
@@ -56,6 +57,10 @@ final apiClientProvider = Provider<ApiClient>((ref) {
 /// Internal flag we attach to a request that has already been retried
 /// after a relogin, so the interceptor doesn't loop forever.
 const String _kReloginRetried = '_mcReloginRetried';
+
+/// Internal: a per-request tag we attach so onRequest / onResponse /
+/// relogin logs can be correlated in `adb logcat`.
+const String _kReqTag = '_mcReqTag';
 
 /// MAIC 401-response failure reasons, derived from the `detail` field the
 /// gateway returns. Extracted once (see [_classifyDetail]) so the
@@ -195,9 +200,38 @@ class _AuthInterceptor extends Interceptor {
     RequestOptions options,
     RequestInterceptorHandler handler,
   ) async {
+    // Tag every request with a short id so onResponse logs can be
+    // matched up. Cheap and only allocated for in-flight requests.
+    if (options.extra[_kReqTag] == null) {
+      options.extra[_kReqTag] = _shortId();
+    }
+    final tag = options.extra[_kReqTag] as String;
+
+    final sw = Stopwatch()..start();
     final token = await _readToken();
-    if (token != null && token.isNotEmpty) {
-      options.headers['Authorization'] = 'Bearer $token';
+    sw.stop();
+    final hasHeader = options.headers.containsKey('Authorization');
+    // If this is a post-relogin retry, the Authorization header was
+    // already set to the freshly-minted JWT by onResponse. Re-running
+    // _readToken() here would race with silentRelogin's write and
+    // could clobber it with a stale read. Honor the explicit override.
+    final isRetry = options.extra[_kReloginRetried] == true;
+    if (!isRetry) {
+      // ignore: avoid_print
+      print(
+          '[DBG-AUTH] req $tag ${options.method} ${options.path} '
+          'tokenReadMs=${sw.elapsedMilliseconds} '
+          'token=${token == null ? "NULL" : (token.isEmpty ? "EMPTY" : "len=${token.length}")} '
+          'authHeaderSet=$hasHeader');
+      if (token != null && token.isNotEmpty) {
+        options.headers['Authorization'] = 'Bearer $token';
+      }
+    } else {
+      // ignore: avoid_print
+      print(
+          '[DBG-AUTH] req $tag ${options.method} ${options.path} '
+          'RETRY — honoring pre-set Authorization '
+          '(token.length=${(options.headers['Authorization'] as String? ?? '').length})');
     }
     handler.next(options);
   }
@@ -209,6 +243,7 @@ class _AuthInterceptor extends Interceptor {
   ) async {
     final status = response.statusCode;
     final path = response.requestOptions.path;
+    final tag = response.requestOptions.extra[_kReqTag] as String? ?? '?';
 
     // Only handle 401. Skip the login + logout endpoints so we don't
     // infinite-loop on a bad password.
@@ -217,6 +252,20 @@ class _AuthInterceptor extends Interceptor {
 
     final alreadyRetried =
         response.requestOptions.extra[_kReloginRetried] == true;
+
+    // Log every 401 with the server's `detail` so we can confirm whether
+    // it's a session-archived / expired-revoked / missing-api-key case.
+    // The detail is the discriminator that tells us if a fresh relogin
+    // will help.
+    if (status == 401 && !isAuthEndpoint) {
+      final detail = _extractDetail(response.data);
+      // ignore: avoid_print
+      print(
+          '[DBG-AUTH] resp $tag 401 path=$path '
+          'detail=${detail ?? "<no-detail>"} '
+          'alreadyRetried=$alreadyRetried '
+          'bodyType=${response.data.runtimeType}');
+    }
 
     if (status != 401 || isAuthEndpoint || alreadyRetried) {
       handler.next(response);
@@ -228,27 +277,33 @@ class _AuthInterceptor extends Interceptor {
     // irrecoverable from the client and re-trying just adds noise).
     final detail = _extractDetail(response.data);
     final failure = _classifyDetail(detail);
-    final tag = _failureTag(failure);
+    final cause = _failureTag(failure);
 
     if (!_isReloginWorthTrying(failure)) {
       // ignore: avoid_print
-      print('[MC-AUTH] skip-relogin cause=$tag path=$path detail=$detail');
+      print('[MC-AUTH] skip-relogin cause=$cause path=$path detail=$detail');
       handler.next(response);
       return;
     }
 
     // ignore: avoid_print
-    print('[MC-AUTH] cause=$tag path=$path — attempting silent relogin');
+    print('[MC-AUTH] cause=$cause path=$path — attempting silent relogin');
     final ok = await _runRelogin();
     if (!ok) {
       // ignore: avoid_print
-      print('[MC-AUTH] relogin failed cause=$tag path=$path — surfacing 401');
+      print(
+          '[MC-AUTH] relogin failed cause=$cause path=$path — surfacing 401 '
+          'detail=$detail');
       handler.next(response);
       return;
     }
 
     try {
       final fresh = await _readToken();
+      // ignore: avoid_print
+      print(
+          '[DBG-AUTH] post-relogin $tag fresh-token=$fresh '
+          'for retry path=$path');
       // Rebuild the request: refresh the JWT, mark it so a second 401
       // surfaces instead of looping, and replay via the SAME dio so the
       // httpClientAdapter + baseUrl stay correct.
@@ -258,11 +313,12 @@ class _AuthInterceptor extends Interceptor {
 
       final retryResponse = await _dio.fetch<dynamic>(response.requestOptions);
       // ignore: avoid_print
-      print('[MC-AUTH] cause=$tag path=$path: relogin ok, retry status=${retryResponse.statusCode}');
+      print(
+          '[MC-AUTH] cause=$cause path=$path: relogin ok, retry status=${retryResponse.statusCode}');
       handler.resolve(retryResponse);
     } catch (e) {
       // ignore: avoid_print
-      print('[MC-AUTH] cause=$tag path=$path: retry threw $e');
+      print('[MC-AUTH] cause=$cause path=$path: retry threw $e');
       handler.next(response);
     }
   }
@@ -271,11 +327,15 @@ class _AuthInterceptor extends Interceptor {
   Future<bool> _runRelogin() {
     final inflight = _inflightRelogin;
     if (inflight != null) {
+      // ignore: avoid_print
+      print('[DBG-AUTH] relogin already-inflight — waiting');
       return inflight.future;
     }
 
     final completer = Completer<bool>();
     _inflightRelogin = completer;
+    // ignore: avoid_print
+    print('[DBG-AUTH] relogin starting (single-flight leader)');
     () async {
       try {
         // Read the callback from the module-level holder (set by
@@ -287,7 +347,7 @@ class _AuthInterceptor extends Interceptor {
         final cb = getReloginCallback();
         final ok = await cb();
         completer.complete(ok);
-      } catch (_) {
+      } catch (e) {
         completer.complete(false);
       } finally {
         _inflightRelogin = null;
@@ -295,6 +355,14 @@ class _AuthInterceptor extends Interceptor {
     }();
     return completer.future;
   }
+}
+
+/// 6-char random id for log correlation. Avoids importing dart:math in
+/// the interceptor hot path; this is only used for debug logs so any
+/// uniqueness heuristic is fine.
+String _shortId() {
+  final n = DateTime.now().microsecondsSinceEpoch;
+  return n.toRadixString(36).substring(n.toRadixString(36).length - 6);
 }
 
 /// Typed API error. Caller can switch on [statusCode] for specific UX.

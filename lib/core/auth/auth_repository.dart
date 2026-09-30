@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -86,7 +87,7 @@ class AuthRepository {
       throw ApiException(response.statusCode, 'No token in login response');
     }
 
-    await _storage.write(key: kAccessTokenKey, value: token);
+    await writeAccessToken(_storage, token);
     if (rememberMe) {
       await _storage.write(key: _kRememberEmail, value: email.trim());
       await _storage.write(key: _kRememberPassword, value: password);
@@ -101,26 +102,74 @@ class AuthRepository {
   /// Try to relogin using cached credentials. Returns true if successful.
   /// Mirrors desktop's `silent_relogin` Tauri command.
   Future<bool> silentRelogin() async {
+    final sw = Stopwatch()..start();
     try {
       final email = await _storage.read(key: _kRememberEmail);
       final password = await _storage.read(key: _kRememberPassword);
-      if (email == null || password == null) return false;
+      final haveCreds = email != null && password != null;
+      debugPrint(
+          '[DBG-AUTH] silentRelogin start haveCreds=$haveCreds emailLen=${email?.length ?? 0}');
+      if (!haveCreds) return false;
 
-      // Temporarily remove auth header so the relogin request doesn't carry
-      // an expired token.
-      final response = await _apiClient.dio.post<Map<String, dynamic>>(
+      // Use a fresh, bare Dio for the login call so the auth interceptor
+      // doesn't try to attach the stale Bearer token we're trying to
+      // replace. Setting `Options(headers: {'Authorization': null})` on
+      // the shared `_apiClient.dio` is a known Dio 5 footgun — null
+      // headers don't actually remove; they get merged as null and
+      // some adapters re-add the default. A bare Dio has no
+      // interceptors, no base auth header, nothing.
+      final loginDio = Dio(BaseOptions(
+        baseUrl: _apiClient.dio.options.baseUrl,
+        connectTimeout: _apiClient.dio.options.connectTimeout,
+        receiveTimeout: _apiClient.dio.options.receiveTimeout,
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'User-Agent': _apiClient.dio.options.headers['User-Agent'],
+        },
+        validateStatus: (s) => s != null && s < 500,
+      ));
+
+      final response = await loginDio.post<Map<String, dynamic>>(
         '/v1/users/login',
         data: {'email': email, 'password': password},
-        options: Options(headers: {'Authorization': null}),
       );
+      sw.stop();
+      debugPrint(
+          '[DBG-AUTH] silentRelogin login response status=${response.statusCode} '
+          'elapsed=${sw.elapsedMilliseconds}ms');
 
-      if (response.statusCode != 200 || response.data == null) return false;
+      if (response.statusCode != 200 || response.data == null) {
+        debugPrint(
+            '[DBG-AUTH] silentRelogin FAILED status=${response.statusCode} '
+            'body=${response.data}');
+        return false;
+      }
       final token = response.data!['token'] as String?;
-      if (token == null || token.isEmpty) return false;
+      if (token == null || token.isEmpty) {
+        debugPrint(
+            '[DBG-AUTH] silentRelogin FAILED no-token body=${response.data}');
+        return false;
+      }
 
-      await _storage.write(key: kAccessTokenKey, value: token);
+      await writeAccessToken(_storage, token);
+      // Readback sanity: confirm the new token is actually readable
+      // before returning true. Without this, a future jwtReader
+      // read could race with the write and the interceptor would
+      // try to retry with null.
+      final verify = await _storage.read(key: kAccessTokenKey);
+      if (verify != token) {
+        debugPrint(
+            '[DBG-AUTH] silentRelogin STORAGE-RACE verify=${verify == null ? "NULL" : "len=${verify.length}"} '
+            'expected=len=${token.length} — returning false');
+        return false;
+      }
+      debugPrint('[DBG-AUTH] silentRelogin OK newTokenLen=${token.length}');
       return true;
-    } catch (_) {
+    } catch (e, st) {
+      sw.stop();
+      debugPrint(
+          '[DBG-AUTH] silentRelogin threw after ${sw.elapsedMilliseconds}ms: $e\n$st');
       return false;
     }
   }
@@ -143,7 +192,7 @@ class AuthRepository {
     } catch (_) {
       // Best-effort. Local clear happens regardless.
     }
-    await _storage.delete(key: kAccessTokenKey);
+    await clearAccessToken(_storage);
     await _storage.delete(key: _kRememberEmail);
     await _storage.delete(key: _kRememberPassword);
   }
