@@ -122,7 +122,7 @@ class _WorkspaceListScreenState extends ConsumerState<WorkspaceListScreen> {
           return ListView.separated(
             controller: _scroll,
             padding: const EdgeInsets.symmetric(vertical: 8),
-            itemCount: all.length + 1 + (_hasMore ? 1 : 0),
+            itemCount: all.length + 2 + (_hasMore ? 1 : 0),  // +1 for quota banner, +1 for daily summary card
             separatorBuilder: (_, i) {
               if (i == 0) return const SizedBox.shrink();
               return const Divider(height: 1);
@@ -135,7 +135,16 @@ class _WorkspaceListScreenState extends ConsumerState<WorkspaceListScreen> {
                   onQuotaRetry: () => ref.invalidate(workspaceQuotaProvider),
                 );
               }
-              final idx = i - 1;
+              if (i == 1) {
+                // 4D-18: daily summary card. Shows the most recent
+                // daily_summary note (one per day max, per cron
+                // idempotency) as a glanceable card at the top. Tapping
+                // opens the detail view where the full recap lives.
+                final summary = _findTodaySummary(all);
+                if (summary == null) return const SizedBox.shrink();
+                return _DailySummaryCard(note: summary);
+              }
+              final idx = i - 2;
               if (idx < all.length) {
                 return _NoteTile(note: all[idx]);
               }
@@ -155,6 +164,94 @@ class _WorkspaceListScreenState extends ConsumerState<WorkspaceListScreen> {
         ),
       ),
     );
+  }
+}
+
+/// 4D-18: find today's daily_summary note (if any).
+/// The cron is idempotent — one per local day — so we just look for
+/// the most recent note with request_kind='daily_summary' in the
+/// first page of the list. If the user is opening the app first
+/// thing in the morning, the most recent one is almost always
+/// "yesterday's" (the cron runs at 03:30 UTC = 21:30 MDT).
+NoteSummary? _findTodaySummary(List<NoteSummary> notes) {
+  NoteSummary? best;
+  for (final n in notes) {
+    if (n.requestKind != 'daily_summary') continue;
+    if (best == null || n.lastUpdatedAt.isAfter(best.lastUpdatedAt)) {
+      best = n;
+    }
+  }
+  return best;
+}
+
+class _DailySummaryCard extends StatelessWidget {
+  const _DailySummaryCard({required this.note});
+  final NoteSummary note;
+
+  @override
+  Widget build(BuildContext context) {
+    // The list endpoint gives summary-only entries (no subkey content).
+    // We show the date label + a "tap to read" hint; the full LLM
+    // recap is on the detail view (workspace_detail_screen.dart
+    // _renderResult handles the `result` subkey's summary + details).
+    final updatedLocal = note.lastUpdatedAt.toLocal();
+    final label = _todayOrYesterday(updatedLocal);
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+      child: Card(
+        elevation: 0,
+        color: scheme.secondaryContainer,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => context.go('/workspace/${note.noteId}'),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.today_outlined, color: scheme.onSecondaryContainer),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '$label daily recap',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                              color: scheme.onSecondaryContainer,
+                              fontWeight: FontWeight.w600,
+                            ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Tap to read what you did ${label.toLowerCase()}',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: scheme.onSecondaryContainer.withValues(alpha: 0.8),
+                            ),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(Icons.chevron_right, color: scheme.onSecondaryContainer),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  static String _todayOrYesterday(DateTime t) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final that = DateTime(t.year, t.month, t.day);
+    final diff = today.difference(that).inDays;
+    if (diff == 0) return 'Today';
+    if (diff == 1) return 'Yesterday';
+    // Older — fall back to a date label.
+    return '${t.year}-${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')}';
   }
 }
 

@@ -268,20 +268,28 @@ class SubkeyCard extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // Header row: subkey label on its own line, metadata on the
+              // next line so narrow screens (≤360dp) don't overflow.
+              // The old Row layout overflowed by 26-41px on the daily
+              // summary note because the version+timestamp string was
+              // too wide to fit alongside "by <actor>".
+              Text(
+                subkey.subkey.toUpperCase(),
+                style: Theme.of(context).textTheme.labelMedium,
+              ),
+              const SizedBox(height: 4),
               Row(
                 children: [
-                  Text(
-                    subkey.subkey.toUpperCase(),
-                    style: Theme.of(context).textTheme.labelMedium,
-                  ),
-                  const Spacer(),
-                  Text(
-                    'by $by',
-                    style: Theme.of(context).textTheme.bodySmall,
+                  Expanded(
+                    child: Text(
+                      'by $by',
+                      style: Theme.of(context).textTheme.bodySmall,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    'v${subkey.version} · $updatedAt',
+                    'v${subkey.version} \u00b7 $updatedAt',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
