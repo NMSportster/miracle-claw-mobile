@@ -355,6 +355,38 @@ class _AuthInterceptor extends Interceptor {
     }();
     return completer.future;
   }
+
+  /// Called by Dio when a request fails before/without a Response —
+  /// i.e. connect/read timeouts, network unreachable, cancellation, or
+  /// stream-mode requests that error mid-stream. The auth interceptor
+  /// previously only saw `onResponse`, which Dio does NOT invoke for
+  /// open SSE/streaming responses (Dio 5.7 behaviour). This made
+  /// SSE errors and timeouts invisible in logcat.
+  ///
+  /// We log the request tag, method, path, and a stable cause string
+  /// so the next pump-loop / watchdog incident is obvious without
+  /// code-diving. We do NOT trigger silentRelogin from here — 401s
+  /// come through `onResponse` as designed, and relogin would be
+  /// wasteful for the common case of "stream was cancelled by listener"
+  /// (which is exactly what [_pumpSseWithWatchdog] does on the SSE
+  /// watchdog path in workspace_service.dart).
+  @override
+  Future<void> onError(
+    DioException err,
+    ErrorInterceptorHandler handler,
+  ) async {
+    final tag = err.requestOptions.extra[_kReqTag] as String? ?? '?';
+    final path = err.requestOptions.path;
+    final type = err.type; // connectionTimeout / sendTimeout / receiveTimeout / cancel / badResponse / unknown
+    final status = err.response?.statusCode;
+    final cancelled = err.requestOptions.cancelToken?.isCancelled ?? false;
+    // ignore: avoid_print
+    print(
+        '[DBG-AUTH] err $tag ${err.requestOptions.method} $path '
+        'type=$type status=$status cancelled=$cancelled '
+        'message=${err.message ?? "<none>"}');
+    handler.next(err);
+  }
 }
 
 /// 6-char random id for log correlation. Avoids importing dart:math in

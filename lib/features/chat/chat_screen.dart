@@ -167,36 +167,54 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       ),
       body: Column(
         children: [
-          if (sessions.isEmpty) _EmptyState(onStart: (msg) => notifier.startNewSession(msg)),
-          if (sessions.isNotEmpty)
-            Expanded(
-              child: ListView.builder(
-                controller: _scrollController,
-                padding: const EdgeInsets.all(12),
-                itemCount: sessions.last.messages.length,
-                itemBuilder: (ctx, i) {
-                  final msg = sessions.last.messages[i];
-                  return _MessageBubble(message: msg);
-                },
-              ),
-            ),
-          if (sessions.isNotEmpty) _Composer(controller: _controller, onSend: (text) async {
+          // Messages list — shown when we have at least one session.
+          // Falls back to the empty-state hint when there are none.
+          Expanded(
+            child: sessions.isEmpty
+                ? _EmptyState()
+                : ListView.builder(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.all(12),
+                    itemCount: sessions.last.messages.length,
+                    itemBuilder: (ctx, i) {
+                      final msg = sessions.last.messages[i];
+                      return _MessageBubble(message: msg);
+                    },
+                  ),
+          ),
+          // Composer is ALWAYS visible — the empty-state hint used to
+          // advertise "Type a message below" while rendering no input
+          // field, making it impossible to start a session. Send routes
+          // to startNewSession() when no session exists, sendTo() otherwise.
+          _Composer(controller: _controller, onSend: (text) async {
             if (text.trim().isEmpty) return;
-            final session = sessions.last;
-            await notifier.sendTo(session.id, text.trim());
             _controller.clear();
+            if (sessions.isEmpty) {
+              await notifier.startNewSession(text.trim());
+            } else {
+              final session = sessions.last;
+              await notifier.sendTo(session.id, text.trim());
+            }
           }),
         ],
       ),
       floatingActionButton: sessions.isEmpty
-          ? null
-          : FloatingActionButton.small(
+          ? FloatingActionButton.small(
               onPressed: () async {
                 _controller.clear();
-                // Show a quick "new session" hint — for now, just prompt for first message.
-                // Phase 2 polish: dedicated new-session screen with model picker.
+                await notifier.startNewSession('Hi!');
               },
-              tooltip: 'New session (send first message below)',
+              tooltip: 'Start a session',
+              child: const Icon(Icons.add),
+            )
+          : FloatingActionButton.small(
+              onPressed: () async {
+                // New-session shortcut: send a placeholder greeting
+                // so the user lands in an active chat immediately.
+                _controller.clear();
+                await notifier.startNewSession('New session');
+              },
+              tooltip: 'New session',
               child: const Icon(Icons.add),
             ),
     );
@@ -204,8 +222,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 }
 
 class _EmptyState extends StatelessWidget {
-  const _EmptyState({required this.onStart});
-  final Future<void> Function(String) onStart;
+  const _EmptyState();
   @override
   Widget build(BuildContext context) {
     return Expanded(

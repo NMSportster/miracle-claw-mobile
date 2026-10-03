@@ -160,6 +160,10 @@ class WorkspaceService {
     final controller = StreamController<WorkspaceEvent>.broadcast();
     final lastSeen = <int>[sinceEventId];
     var sseFailed = false;
+    // CancelToken held by the active pump so onCancel can tear the
+    // SSE connection down promptly (Dio 5 + Cloudflare HTTP/2 keep
+    // streams open on Android even when no consumer is listening).
+    CancelToken? sseCancelToken;
 
     Future<void> pump() async {
       var pumpIter = 0;
@@ -169,9 +173,21 @@ class WorkspaceService {
           if (!sseFailed) {
             // ignore: avoid_print
             print('[DBG-WS] pump iter=$pumpIter trying SSE');
-            await _pumpSse(controller, lastSeen);
-            // ignore: avoid_print
-            print('[DBG-WS] pump iter=$pumpIter SSE returned cleanly');
+            final ct = CancelToken();
+            sseCancelToken = ct;
+            try {
+              // Watchdog: if the SSE doesn't produce any chunk within
+              // [sseWatchdogTimeout], cancel the request and fall back
+              // to poll. Without this, Dio 5 + the Cloudflare HTTP/2
+              // tunnel will hold the connection open past receiveTimeout
+              // and we'll leak streams (observed: 70+ open streams in
+              // 90 seconds, hammering CF rate limit).
+              await _pumpSseWithWatchdog(controller, lastSeen, ct);
+              // ignore: avoid_print
+              print('[DBG-WS] pump iter=$pumpIter SSE returned cleanly');
+            } finally {
+              sseCancelToken = null;
+            }
           } else {
             // ignore: avoid_print
             print('[DBG-WS] pump iter=$pumpIter using POLL (sseFailed=true)');
@@ -189,20 +205,72 @@ class WorkspaceService {
             sseFailed = true;
             // Will fall through to poll on next iteration.
           }
+          // Brief backoff before the next attempt — otherwise the
+          // pump can spin as fast as Dio lets us open sockets, which
+          // is what produced 70+ open streams in 90 seconds in the
+          // 2026-10-03 incident. 2s is short enough that the user
+          // doesn't feel it, long enough that we can't drown MAIC.
+          await Future.delayed(const Duration(seconds: 2));
         }
       }
     }
 
     controller.onListen = pump;
     controller.onCancel = () {
+      // Cancel any in-flight SSE so the underlying HTTP/2 stream is
+      // torn down. Without this, the pump's `await for` keeps
+      // listening until the next disconnect, which Dio on Android
+      // ties to the eventual TCP teardown (minutes, sometimes never).
+      final ct = sseCancelToken;
+      if (ct != null && !ct.isCancelled) {
+        ct.cancel('Stream cancelled by listener');
+      }
       // No-op; pump() will see isClosed and exit.
     };
     return controller.stream;
   }
 
+  /// Hard upper bound on how long an SSE connection may stay open
+  /// without delivering a *full event* (a parsed `note.*` event, not
+  /// a keepalive comment). Set to 45s so it's longer than the typical
+  /// `keepaliveTimeout` of 15s + data, but short enough that a stuck
+  /// stream can't accumulate. Matches MAIC's `{'event': 'timeout'}`
+  /// push cadence (30s) plus slack.
+  static const Duration _sseWatchdogTimeout = Duration(seconds: 45);
+
+  /// Same as [_pumpSse] but cancels the request via [cancelToken] if
+  /// no event arrives within [_sseWatchdogTimeout]. The original
+  /// request still has Dio-level timeouts (10s connect, 20s receive)
+  /// — this watchdog is the safety net for the case where those don't
+  /// fire (observed on Dio 5.7 + Cloudflare HTTP/2 tunnel on
+  /// Samsung Android 10).
+  Future<void> _pumpSseWithWatchdog(
+    StreamController<WorkspaceEvent> controller,
+    List<int> lastSeen,
+    CancelToken cancelToken,
+  ) async {
+    final sseFuture = _pumpSse(controller, lastSeen, cancelToken);
+    final watchdog = Future<void>.delayed(_sseWatchdogTimeout, () {
+      throw _SseWatchdogTimeout();
+    });
+    try {
+      await Future.any([sseFuture, watchdog]);
+    } catch (e) {
+      // Cancel the in-flight HTTP/2 stream so the socket is released.
+      if (!cancelToken.isCancelled) {
+        cancelToken.cancel('SSE watchdog timeout after $_sseWatchdogTimeout');
+      }
+      // Wait briefly for the original future to unwind so we don't
+      // race its teardown with the next pump iteration.
+      try { await sseFuture; } catch (_) {}
+      rethrow;
+    }
+  }
+
   Future<void> _pumpSse(
     StreamController<WorkspaceEvent> controller,
     List<int> lastSeen,
+    CancelToken cancelToken,
   ) async {
     final response = await _dio.get<ResponseBody>(
       '/v1/users/me/workspace/stream',
@@ -225,6 +293,7 @@ class WorkspaceService {
         receiveTimeout: const Duration(seconds: 20),
         sendTimeout: const Duration(seconds: 10),
       ),
+      cancelToken: cancelToken,
     );
 
     if (response.statusCode != 200 || response.data == null) {
@@ -375,6 +444,16 @@ class WorkspaceService {
 // Exceptions
 // ─────────────────────────────────────────────────────────────────────
 
+
+/// Thrown by [_pumpSseWithWatchdog] when no SSE chunk arrives within
+/// [_sseWatchdogTimeout]. Distinct from [WorkspaceException] so the
+/// pump loop can log it cleanly without it being treated as a regular
+/// HTTP failure. Always catches in the outer pump() and switches to
+/// the poll fallback.
+class _SseWatchdogTimeout implements Exception {
+  @override
+  String toString() => 'SSE watchdog timeout (no data for 45s)';
+}
 
 class WorkspaceException implements Exception {
   WorkspaceException(this.statusCode, this.message);
