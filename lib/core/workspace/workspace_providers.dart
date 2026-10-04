@@ -101,6 +101,22 @@ final noteDetailProvider = FutureProvider.family<NoteDetail, String>((ref, noteI
   return svc.fetchNote(noteId);
 });
 
+/// Pre-fetched short preview text for a single note — first ~80 chars
+/// of either the `result` subkey's `summary`/`text` (LLM output) or the
+/// `request` subkey's `text`/`title` (user input). Drives the Tasks
+/// list tile headlines so they show real content instead of kind names
+/// like "Untitled" / "Daily_summary".
+///
+/// Why not reuse `noteDetailProvider`? Detail loads the entire note
+/// payload (~50 subkey versions + history). Preview only needs one
+/// subkey per row. We can later replace this with a server-side
+/// `preview` field on the list response, but doing it client-side first
+/// lets the UI ship without a backend deploy.
+final notePreviewProvider = FutureProvider.family<String?, String>((ref, noteId) async {
+  final detail = await ref.watch(noteDetailProvider(noteId).future);
+  return extractNotePreview(detail);
+});
+
 // ─────────────────────────────────────────────────────────────────────
 // Mutations (write/delete helpers used by UI)
 // ─────────────────────────────────────────────────────────────────────

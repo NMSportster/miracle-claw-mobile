@@ -143,3 +143,36 @@ String? noteKindFromDetail(NoteDetail detail) {
   if (req == null) return null;
   return req.value['kind'] as String?;
 }
+
+/// Extract a short preview string from a note for list-tile display.
+///
+/// Preference order:
+///   1. `result.summary` — LLM-generated recap (most informative for
+///      daily_summary / voice_memo / photo_ocr / command)
+///   2. `result.text` — raw model output if no summary key
+///   3. `request.text` — the user's original task description
+///   4. `request.title` — short user-supplied title (if any)
+///
+/// Returns null when none of those fields exist. The caller should
+/// fall back to the request_kind label so the tile is never blank.
+String? extractNotePreview(NoteDetail detail, {int maxLen = 80}) {
+  String? pick(Map<String, dynamic>? v, List<String> keys) {
+    if (v == null) return null;
+    for (final k in keys) {
+      final s = v[k];
+      if (s is String && s.trim().isNotEmpty) return s.trim();
+    }
+    return null;
+  }
+
+  final result = detail.subkeys['result']?.value;
+  final request = detail.subkeys['request']?.value;
+  final raw = pick(result, const ['summary', 'text', 'transcript']) ??
+      pick(request, const ['text', 'title', 'description']);
+
+  if (raw == null) return null;
+  // Collapse whitespace so "OCR of an\ninvoice" reads as one line.
+  final collapsed = raw.replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (collapsed.length <= maxLen) return collapsed;
+  return '${collapsed.substring(0, maxLen - 1).trimRight()}…';
+}

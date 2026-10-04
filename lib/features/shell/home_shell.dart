@@ -67,28 +67,16 @@ class _HomeShellState extends ConsumerState<HomeShell> {
           orElse: () => false,
         );
 
+    // Tasks screen exposes three capture actions via a FAB cluster
+    // (Material 3 SpeedDial). At rest: one + button. On tap: expands
+    // to show New task, Voice memo, Photo OCR with visible labels so
+    // the user doesn't have to long-press to discover what each does.
+    // See home_shell speed-dial state in _FabExpanded below.
+    final showFab = _selectedIndex == 1;
+
     return Scaffold(
       appBar: AppBar(
         title: Text(_destinations[_selectedIndex].label),
-        actions: [
-          if (_selectedIndex == 1) ...[
-            IconButton(
-              icon: const Icon(Icons.mic_none_outlined),
-              tooltip: 'Voice memo',
-              onPressed: () => context.push('/capture/voice'),
-            ),
-            IconButton(
-              icon: const Icon(Icons.photo_camera_outlined),
-              tooltip: 'Photo OCR',
-              onPressed: () => context.push('/capture/photo'),
-            ),
-            IconButton(
-              icon: const Icon(Icons.add),
-              tooltip: 'New task',
-              onPressed: () => context.push('/workspace/new'),
-            ),
-          ],
-        ],
       ),
       drawer: NavigationDrawer(
         selectedIndex: _selectedIndex,
@@ -130,6 +118,141 @@ class _HomeShellState extends ConsumerState<HomeShell> {
         ],
       ),
       body: _pageFor(_selectedIndex),
+      floatingActionButton: showFab ? const _TasksFabCluster() : null,
+    );
+  }
+}
+
+/// FAB cluster for the Tasks screen. Speed-dial pattern: one main
+/// `+` FAB at rest; tapping it expands two satellite mini-FABs
+/// (Voice memo, Photo OCR) above it, each with a visible label so
+/// the user doesn't have to long-press to discover what they do.
+///
+/// Why a cluster instead of three AppBar icons:
+///   - The previous design had three mystery icons in the AppBar
+///     (mic / camera / +) with only tooltip-level discoverability.
+///     David flagged this as opaque — users had no idea what each
+///     button did until they tapped-and-held.
+///   - Material 3 spec puts the primary action on FAB. Voice + photo
+///     are quick-capture siblings, so they live as speed-dial children.
+///   - Tapping outside the cluster collapses it (FocusScope).
+class _TasksFabCluster extends StatefulWidget {
+  const _TasksFabCluster();
+
+  @override
+  State<_TasksFabCluster> createState() => _TasksFabClusterState();
+}
+
+class _TasksFabClusterState extends State<_TasksFabCluster> {
+  bool _expanded = false;
+
+  void _toggle() => setState(() => _expanded = !_expanded);
+  void _collapse() {
+    if (_expanded) setState(() => _expanded = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return FocusScope(
+      // Tapping outside the cluster should close it.
+      onFocusChange: (has) {
+        if (!has) _collapse();
+      },
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (_expanded) ...[
+            _MiniFab(
+              icon: Icons.mic_none_outlined,
+              label: 'Voice memo',
+              onTap: () {
+                _collapse();
+                context.push('/capture/voice');
+              },
+            ),
+            const SizedBox(height: 12),
+            _MiniFab(
+              icon: Icons.photo_camera_outlined,
+              label: 'Photo OCR',
+              onTap: () {
+                _collapse();
+                context.push('/capture/photo');
+              },
+            ),
+            const SizedBox(height: 12),
+          ],
+          FloatingActionButton(
+            onPressed: _toggle,
+            backgroundColor: _expanded
+                    ? scheme.primary
+                    : scheme.primary,
+            foregroundColor: scheme.onPrimary,
+            child: AnimatedRotation(
+              turns: _expanded ? 0.125 : 0,
+              duration: const Duration(milliseconds: 200),
+              child: const Icon(Icons.add, size: 28),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Single mini-FAB in the speed-dial: icon button + a small label
+/// chip to its left so the user can read what it does without
+/// long-pressing to see a tooltip.
+class _MiniFab extends StatelessWidget {
+  const _MiniFab({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Visible label chip — fixes the "mystery icon" complaint.
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: scheme.surface,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: scheme.outlineVariant),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.15),
+                blurRadius: 4,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Text(
+            label,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: scheme.onSurface,
+                ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        FloatingActionButton.small(
+          heroTag: 'mini_$label',
+          onPressed: onTap,
+          backgroundColor: scheme.secondaryContainer,
+          foregroundColor: scheme.onSecondaryContainer,
+          child: Icon(icon),
+        ),
+      ],
     );
   }
 }

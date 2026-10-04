@@ -184,12 +184,12 @@ NoteSummary? _findTodaySummary(List<NoteSummary> notes) {
   return best;
 }
 
-class _DailySummaryCard extends StatelessWidget {
+class _DailySummaryCard extends ConsumerWidget {
   const _DailySummaryCard({required this.note});
   final NoteSummary note;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     // The list endpoint gives summary-only entries (no subkey content).
     // We show the date label + a "tap to read" hint; the full LLM
     // recap is on the detail view (workspace_detail_screen.dart
@@ -197,6 +197,17 @@ class _DailySummaryCard extends StatelessWidget {
     final updatedLocal = note.lastUpdatedAt.toLocal();
     final label = _todayOrYesterday(updatedLocal);
     final scheme = Theme.of(context).colorScheme;
+
+    // Pull the actual recap snippet so the card headline reads as
+    // "Yesterday's recap — 5 things you did, 2 sessions, 0 errors"
+    // instead of "Yesterday daily recap — tap to read xxxx". The
+    // provider reuses noteDetailProvider's cache so the cost is just
+    // one extra subkey JSON decode after the detail fetch.
+    final preview = ref.watch(notePreviewProvider(note.noteId)).maybeWhen(
+          data: (s) => s,
+          orElse: () => null,
+        );
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
       child: Card(
@@ -218,7 +229,9 @@ class _DailySummaryCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        '$label daily recap',
+                        label == 'Today' || label == 'Yesterday'
+                            ? "$label's recap"
+                            : label,
                         style: Theme.of(context).textTheme.titleSmall?.copyWith(
                               color: scheme.onSecondaryContainer,
                               fontWeight: FontWeight.w600,
@@ -226,9 +239,11 @@ class _DailySummaryCard extends StatelessWidget {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        'Tap to read what you did ${label.toLowerCase()}',
+                        preview ?? 'Tap to read the full recap',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: scheme.onSecondaryContainer.withValues(alpha: 0.8),
+                              color: scheme.onSecondaryContainer.withValues(alpha: 0.85),
                             ),
                       ),
                     ],
@@ -250,8 +265,8 @@ class _DailySummaryCard extends StatelessWidget {
     final diff = today.difference(that).inDays;
     if (diff == 0) return 'Today';
     if (diff == 1) return 'Yesterday';
-    // Older — fall back to a date label.
-    return '${t.year}-${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')}';
+    // Older — fall back to a short date label.
+    return 'Recap from ${t.year}-${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')}';
   }
 }
 
@@ -332,24 +347,72 @@ class _LoadMoreFooter extends StatelessWidget {
   }
 }
 
-class _NoteTile extends StatelessWidget {
+class _NoteTile extends ConsumerWidget {
   const _NoteTile({required this.note});
   final NoteSummary note;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final kind = note.requestKind ?? 'note';
+    // Watch the per-note preview. While loading, fall back to the kind
+    // label ("Voice memo", "Photo OCR") so the tile is never blank —
+    // this also gives the user something meaningful during the brief
+    // 200–500ms detail fetch. Once loaded, the snippet replaces it.
+    final previewAsync = ref.watch(notePreviewProvider(note.noteId));
+    final preview = previewAsync.maybeWhen(
+      data: (s) => s,
+      orElse: () => null,
+    );
+    final headline = preview ?? _kindLabel(kind);
+    final scheme = Theme.of(context).colorScheme;
     return ListTile(
       leading: _iconForKind(kind),
-      title: Text(_titleFor(note)),
-      subtitle: Text(
-        _subtitleFor(note),
+      title: Text(
+        headline,
         maxLines: 2,
         overflow: TextOverflow.ellipsis,
+        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+              fontWeight: FontWeight.w500,
+            ),
+      ),
+      subtitle: Padding(
+        padding: const EdgeInsets.only(top: 2),
+        child: Row(
+          children: [
+            if (kind != 'note')
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                decoration: BoxDecoration(
+                  color: scheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  kind,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
+                ),
+              ),
+            if (kind != 'note') const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                _subtitleFor(note),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+              ),
+            ),
+          ],
+        ),
       ),
       trailing: Text(
         formatBytesShort(note.totalBytes),
-        style: Theme.of(context).textTheme.bodySmall,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
       ),
       onTap: () => context.go('/workspace/${note.noteId}'),
     );
@@ -397,17 +460,30 @@ class _NoteTile extends StatelessWidget {
     );
   }
 
-  String _titleFor(NoteSummary n) {
-    if (n.requestKind != null) {
-      return '${n.requestKind![0].toUpperCase()}${n.requestKind!.substring(1)}';
-    }
-    return 'Untitled';
+  /// Display label for a kind (used as fallback headline while the
+  /// per-note preview is loading). Lowercases with spaces between
+  /// underscores so "voice_memo" reads as "Voice memo" not "Voice_memo".
+  static String _kindLabel(String kind) {
+    if (kind == 'note') return 'Untitled';
+    final spaced = kind.replaceAll('_', ' ');
+    return spaced[0].toUpperCase() + spaced.substring(1);
   }
 
   String _subtitleFor(NoteSummary n) {
-    final subkeys = n.subkeys.isEmpty ? '—' : n.subkeys.join(', ');
     final by = n.lastUpdatedBy ?? 'unknown';
-    return '$subkeys · by $by';
+    final when = _relativeTime(n.lastUpdatedAt);
+    return '$by · $when';
+  }
+
+  static String _relativeTime(DateTime utc) {
+    final local = utc.toLocal();
+    final diff = DateTime.now().difference(local);
+    if (diff.inMinutes < 1) return 'just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    if (diff.inDays < 7) return '${diff.inDays}d ago';
+    // Older — fall back to a short date so it doesn't grow forever.
+    return '${local.year}-${local.month.toString().padLeft(2, '0')}-${local.day.toString().padLeft(2, '0')}';
   }
 }
 
