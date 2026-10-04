@@ -46,6 +46,24 @@ class WorkspaceService {
   final DeviceIdStore _deviceStore;
 
   // ───────────────────────────────────────────────────────────────
+  // Shared change-feed state (singleton across `events()` callers).
+  //
+  // 2026-10-04 fix: previously every `events()` call created its own
+  // broadcast controller + its own pump loop. With N callers (list +
+  // detail + any future screens) we ended up with N concurrent
+  // pumps each hammering MAIC's /workspace/stream + /workspace/poll
+  // — observed 5+ pumps in 60 seconds and rapid HTTP 429s that
+  // starved every other MAIC call (chat, sessions, etc.).
+  //
+  // Now `events()` returns the same shared broadcast stream for all
+  // callers and runs a single pump. The pump starts lazily on the
+  // first listener and stops when the last listener cancels.
+  // ───────────────────────────────────────────────────────────────
+  StreamController<WorkspaceEvent>? _eventsController;
+  Future<void>? _pumpFuture;
+  List<int>? _lastSeen;
+
+  // ───────────────────────────────────────────────────────────────
   // REST
   // ───────────────────────────────────────────────────────────────
 
@@ -151,83 +169,73 @@ class WorkspaceService {
   /// if SSE fails. Returns a broadcast Stream so multiple listeners
   /// (list screen, detail screen) can share one connection.
   ///
-  /// Pass `sinceEventId` to resume after a reconnect. The service
-  /// tracks the last seen event id internally for auto-resume on
-  /// transient errors.
+  /// Pass `sinceEventId` to resume after a reconnect — it's only
+  /// honored on the FIRST call. Subsequent calls ignore it (lastSeen
+  /// accumulates across reconnections in the class field).
+  ///
+  /// All callers share a single stream + pump for the lifetime of
+  /// this service. The pump starts lazily on first listener and runs
+  /// continuously; it never tears down on listener churn. This
+  /// prevents a feedback loop where listener churn would re-open the
+  /// SSE connection from sinceEventId=0, replay the entire backlog,
+  /// and trigger a flood of invalidations.
   Stream<WorkspaceEvent> events({int sinceEventId = 0}) {
-    // Use a StreamController so we can retry on SSE failure with poll
-    // as fallback. Multiple listeners share via broadcast.
-    final controller = StreamController<WorkspaceEvent>.broadcast();
-    final lastSeen = <int>[sinceEventId];
-    var sseFailed = false;
-    // CancelToken held by the active pump so onCancel can tear the
-    // SSE connection down promptly (Dio 5 + Cloudflare HTTP/2 keep
-    // streams open on Android even when no consumer is listening).
-    CancelToken? sseCancelToken;
-
-    Future<void> pump() async {
-      var pumpIter = 0;
-      while (!controller.isClosed) {
-        pumpIter++;
-        try {
-          if (!sseFailed) {
-            // ignore: avoid_print
-            print('[DBG-WS] pump iter=$pumpIter trying SSE');
-            final ct = CancelToken();
-            sseCancelToken = ct;
-            try {
-              // Watchdog: if the SSE doesn't produce any chunk within
-              // [sseWatchdogTimeout], cancel the request and fall back
-              // to poll. Without this, Dio 5 + the Cloudflare HTTP/2
-              // tunnel will hold the connection open past receiveTimeout
-              // and we'll leak streams (observed: 70+ open streams in
-              // 90 seconds, hammering CF rate limit).
-              await _pumpSseWithWatchdog(controller, lastSeen, ct);
-              // ignore: avoid_print
-              print('[DBG-WS] pump iter=$pumpIter SSE returned cleanly');
-            } finally {
-              sseCancelToken = null;
+    // Lazily create the shared controller + start the pump on the
+    // very first events() call. Once created, the controller lives
+    // for the lifetime of the WorkspaceService.
+    if (_eventsController == null || _eventsController!.isClosed) {
+      final controller = StreamController<WorkspaceEvent>.broadcast(
+        sync: false,
+      );
+      _eventsController = controller;
+      // Seed lastSeen only once. Once the pump has been alive, we
+      // trust the in-memory tracker to know where we are.
+      _lastSeen ??= <int>[sinceEventId];
+      // Pump body. Uses class fields so we never run two concurrently.
+      Future<void> pump() async {
+        var sseFailed = false;
+        while (!controller.isClosed) {
+          try {
+            if (!sseFailed) {
+              try {
+                await _pumpSseWithWatchdog(controller, _lastSeen!, CancelToken());
+              } finally {
+                // No class-level cancel token — the watchdog manages
+                // its own internally.
+              }
+            } else {
+              await _pumpPoll(controller, _lastSeen!);
+              // After a successful poll, try SSE again.
+              sseFailed = false;
             }
-          } else {
-            // ignore: avoid_print
-            print('[DBG-WS] pump iter=$pumpIter using POLL (sseFailed=true)');
-            await _pumpPoll(controller, lastSeen);
-            // After a few successful polls, try SSE again.
-            sseFailed = false;
+          } catch (e) {
+            if (!controller.isClosed) {
+              controller.addError(e);
+            }
+            if (!sseFailed) {
+              sseFailed = true;
+              // Will fall through to poll on next iteration.
+            }
+            // 2s backoff (see notesListProvider for the rationale —
+            // without it, Dio 5 + CF HTTP/2 can spin as fast as it
+            // can open sockets, hitting 429 in seconds).
+            await Future.delayed(const Duration(seconds: 2));
           }
-        } catch (e) {
-          // ignore: avoid_print
-          print('[DBG-WS] pump iter=$pumpIter error: $e');
-          if (!controller.isClosed) {
-            controller.addError(e);
-          }
-          if (!sseFailed) {
-            sseFailed = true;
-            // Will fall through to poll on next iteration.
-          }
-          // Brief backoff before the next attempt — otherwise the
-          // pump can spin as fast as Dio lets us open sockets, which
-          // is what produced 70+ open streams in 90 seconds in the
-          // 2026-10-03 incident. 2s is short enough that the user
-          // doesn't feel it, long enough that we can't drown MAIC.
-          await Future.delayed(const Duration(seconds: 2));
         }
       }
-    }
 
-    controller.onListen = pump;
-    controller.onCancel = () {
-      // Cancel any in-flight SSE so the underlying HTTP/2 stream is
-      // torn down. Without this, the pump's `await for` keeps
-      // listening until the next disconnect, which Dio on Android
-      // ties to the eventual TCP teardown (minutes, sometimes never).
-      final ct = sseCancelToken;
-      if (ct != null && !ct.isCancelled) {
-        ct.cancel('Stream cancelled by listener');
-      }
-      // No-op; pump() will see isClosed and exit.
-    };
-    return controller.stream;
+      controller.onListen = () {
+        // Guard against double-start.
+        _pumpFuture ??= pump();
+      };
+      // Intentionally NO onCancel handler that closes the controller.
+      // Listeners can come and go but the stream + pump keep running.
+      // Closing the controller on the last listener leaving would
+      // cause the next events() call to start a new connection from
+      // sinceEventId=0 and replay the entire backlog, hammering MAIC
+      // and re-triggering every Riverpod subscriber's invalidate.
+    }
+    return _eventsController!.stream;
   }
 
   /// Hard upper bound on how long an SSE connection may stay open
