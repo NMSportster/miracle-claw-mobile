@@ -222,7 +222,7 @@ class _DailySummaryCard extends ConsumerWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(Icons.today_outlined, color: scheme.onSecondaryContainer),
+                Icon(Icons.insights, color: scheme.onSecondaryContainer),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
@@ -419,45 +419,99 @@ class _NoteTile extends ConsumerWidget {
   }
 
   static Widget _iconForKind(String kind) {
-    IconData icon;
+    // Visual upgrade (2026-10-04): each kind gets a distinctive filled
+    // icon + a tinted circular background. The previous design used
+    // outlined monochrome icons on transparent — readable but drab.
+    // Filled icons with tinted backgrounds add visual hierarchy so the
+    // list scans like a real inbox: capture kinds (warm colors) read
+    // as "yours", system kinds (cool colors) read as "machine".
+    final (icon, bg, fg) = _kindStyle(kind);
+    return Container(
+      width: 40,
+      height: 40,
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      alignment: Alignment.center,
+      child: Icon(icon, size: 22, color: fg),
+    );
+  }
+
+  /// Returns (icon, background, foreground) for a note kind.
+  /// Colors picked from the Material 3 tonal palette: warm hues for
+  /// user-captured kinds (voice / photo / search / reminder), cool
+  /// hues for system kinds (context / standing instruction), and accent
+  /// purple for the daily recap.
+  static (IconData, Color, Color) _kindStyle(String kind) {
     switch (kind) {
       case 'reminder':
-        icon = Icons.notifications_outlined;
-        break;
+        return (
+          Icons.notifications_active,
+          const Color(0xFFFFE0B2), // amber 100
+          const Color(0xFFE65100), // amber 900
+        );
       case 'search':
-        icon = Icons.search;
-        break;
+        return (
+          Icons.travel_explore,
+          const Color(0xFFB3E5FC), // light blue 100
+          const Color(0xFF01579B), // light blue 900
+        );
       case 'file_request':
-        icon = Icons.folder_outlined;
-        break;
+        return (
+          Icons.folder_zip,
+          const Color(0xFFFFE082), // yellow 200
+          const Color(0xFF8B5A00), // dark amber
+        );
       case 'message':
-        icon = Icons.send_outlined;
-        break;
+        return (
+          Icons.send_and_archive,
+          const Color(0xFFC5E1A5), // light green 200
+          const Color(0xFF33691E), // light green 600
+        );
       case 'context':
-        icon = Icons.layers_outlined;
-        break;
+        return (
+          Icons.dataset,
+          const Color(0xFFB0BEC5), // blue grey 200
+          const Color(0xFF37474F), // blue grey 800
+        );
       case 'standing_instruction':
-        icon = Icons.repeat_on_outlined;
-        break;
+        return (
+          Icons.loop,
+          const Color(0xFFB39DDB), // deep purple 200
+          const Color(0xFF4527A0), // deep purple 800
+        );
       case 'command':
-        icon = Icons.bolt_outlined;
-        break;
+        return (
+          Icons.terminal,
+          const Color(0xFFCFD8DC), // blue grey 100
+          const Color(0xFF263238), // blue grey 900
+        );
       case 'voice_memo':
-        icon = Icons.mic_none_outlined;
-        break;
+        return (
+          Icons.graphic_eq,
+          const Color(0xFFFFCCBC), // deep orange 100
+          const Color(0xFFBF360C), // deep orange 900
+        );
       case 'photo_ocr':
-        icon = Icons.image_outlined;
-        break;
+        return (
+          Icons.document_scanner,
+          const Color(0xFFB2DFDB), // teal 100
+          const Color(0xFF004D40), // teal 900
+        );
       case 'daily_summary':
-        icon = Icons.today_outlined;
-        break;
+        return (
+          Icons.insights,
+          const Color(0xFFE1BEE7), // purple 100
+          const Color(0xFF6A1B9A), // purple 800
+        );
       default:
-        icon = Icons.assignment_outlined;
+        return (
+          Icons.assignment,
+          const Color(0xFFE0E0E0), // grey 300
+          const Color(0xFF424242), // grey 800
+        );
     }
-    return CircleAvatar(
-      backgroundColor: Colors.transparent,
-      child: Icon(icon, size: 20),
-    );
   }
 
   /// Display label for a kind (used as fallback headline while the

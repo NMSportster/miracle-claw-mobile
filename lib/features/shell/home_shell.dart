@@ -165,8 +165,9 @@ class _TasksFabClusterState extends State<_TasksFabCluster> {
         children: [
           if (_expanded) ...[
             _MiniFab(
-              icon: Icons.mic_none_outlined,
+              icon: Icons.graphic_eq,
               label: 'Voice memo',
+              accent: const Color(0xFFBF360C), // deep orange 900
               onTap: () {
                 _collapse();
                 context.push('/capture/voice');
@@ -174,8 +175,9 @@ class _TasksFabClusterState extends State<_TasksFabCluster> {
             ),
             const SizedBox(height: 12),
             _MiniFab(
-              icon: Icons.photo_camera_outlined,
+              icon: Icons.document_scanner,
               label: 'Photo OCR',
+              accent: const Color(0xFF004D40), // teal 900
               onTap: () {
                 _collapse();
                 context.push('/capture/photo');
@@ -183,16 +185,43 @@ class _TasksFabClusterState extends State<_TasksFabCluster> {
             ),
             const SizedBox(height: 12),
           ],
-          FloatingActionButton(
-            onPressed: _toggle,
-            backgroundColor: _expanded
-                    ? scheme.primary
-                    : scheme.primary,
-            foregroundColor: scheme.onPrimary,
-            child: AnimatedRotation(
-              turns: _expanded ? 0.125 : 0,
-              duration: const Duration(milliseconds: 200),
-              child: const Icon(Icons.add, size: 28),
+          // Main FAB: large (extended) with primary gradient. The
+          // gradient is the visual cue that this is the primary action —
+          // mini-FABs above use a flat secondaryContainer so they read
+          // as siblings, not co-equals.
+          Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(20),
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [scheme.primary, scheme.tertiary],
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: scheme.primary.withValues(alpha: 0.4),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: FloatingActionButton.large(
+              onPressed: _toggle,
+              backgroundColor: Colors.transparent,
+              foregroundColor: scheme.onPrimary,
+              elevation: 0,
+              child: AnimatedRotation(
+                turns: _expanded ? 0.125 : 0,
+                duration: const Duration(milliseconds: 200),
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  child: Icon(
+                    key: ValueKey(_expanded),
+                    _expanded ? Icons.close : Icons.add,
+                    size: 32,
+                  ),
+                ),
+              ),
             ),
           ),
         ],
@@ -209,39 +238,49 @@ class _MiniFab extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.onTap,
+    this.accent,
   });
 
   final IconData icon;
   final String label;
   final VoidCallback onTap;
+  final Color? accent;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final color = accent ?? scheme.onSecondaryContainer;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         // Visible label chip — fixes the "mystery icon" complaint.
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
             color: scheme.surface,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(10),
             border: Border.all(color: scheme.outlineVariant),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withValues(alpha: 0.15),
-                blurRadius: 4,
+                color: Colors.black.withValues(alpha: 0.2),
+                blurRadius: 6,
                 offset: const Offset(0, 2),
               ),
             ],
           ),
-          child: Text(
-            label,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  color: scheme.onSurface,
-                ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 16, color: color),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: scheme.onSurface,
+                    ),
+              ),
+            ],
           ),
         ),
         const SizedBox(width: 12),
@@ -249,7 +288,8 @@ class _MiniFab extends StatelessWidget {
           heroTag: 'mini_$label',
           onPressed: onTap,
           backgroundColor: scheme.secondaryContainer,
-          foregroundColor: scheme.onSecondaryContainer,
+          foregroundColor: color,
+          elevation: 2,
           child: Icon(icon),
         ),
       ],
