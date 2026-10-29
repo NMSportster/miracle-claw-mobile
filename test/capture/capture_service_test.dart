@@ -79,7 +79,7 @@ void main() {
       expect(result.note!.noteId, 'test-note-id');
       expect(result.note!.requestKind, 'voice_memo');
       expect(adapter.lastRequest!.method, 'POST');
-      expect(adapter.lastRequest!.path, '/v1/users/me/workspace/notes');
+      expect(adapter.lastRequest!.path, '/v1/users/me/workspace/notes/voice');
       expect(adapter.lastRequest!.data, isA<FormData>());
 
       tmpFile.deleteSync();
@@ -131,7 +131,7 @@ void main() {
 
       expect(result.isOk, isTrue);
       expect(result.note!.requestKind, 'photo_ocr');
-      expect(adapter.lastRequest!.path, '/v1/users/me/workspace/notes');
+      expect(adapter.lastRequest!.path, '/v1/users/me/workspace/notes/photo');
 
       tmpFile.deleteSync();
       tmpDir.deleteSync();
