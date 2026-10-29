@@ -27,6 +27,26 @@ class HomeShell extends ConsumerStatefulWidget {
 class _HomeShellState extends ConsumerState<HomeShell> {
   int _selectedIndex = 0;
 
+  /// Whether the Tasks FAB cluster (SpeedDial) is expanded. Owned here
+  /// rather than inside the cluster widget so the scrim can be a
+  /// sibling of the FAB in the widget tree (it has to render *on top*
+  /// of the FAB, not under it) and the two stay in sync.
+  final ValueNotifier<bool> _fabExpanded = ValueNotifier<bool>(false);
+
+  @override
+  void dispose() {
+    _fabExpanded.dispose();
+    super.dispose();
+  }
+
+  void _toggleFab() {
+    _fabExpanded.value = !_fabExpanded.value;
+  }
+
+  void _collapseFab() {
+    if (_fabExpanded.value) _fabExpanded.value = false;
+  }
+
   static const _destinations = <_NavDestination>[
     _NavDestination(
       label: 'Chat',
@@ -74,51 +94,90 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     // See home_shell speed-dial state in _FabExpanded below.
     final showFab = _selectedIndex == 1;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(_destinations[_selectedIndex].label),
-      ),
-      drawer: NavigationDrawer(
-        selectedIndex: _selectedIndex,
-        onDestinationSelected: _onSelect,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(28, 16, 28, 10),
-            child: Text(
-              'Miracle Claw',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
+    return Stack(
+      children: [
+        Scaffold(
+          appBar: AppBar(
+            title: Text(_destinations[_selectedIndex].label),
           ),
-          for (var i = 0; i < _destinations.length; i++)
-            NavigationDrawerDestination(
-              icon: i == 1 && showTasksBadge
-                  ? Badge(
-                      smallSize: 8,
-                      child: Icon(_destinations[i].icon),
-                    )
-                  : Icon(_destinations[i].icon),
-              selectedIcon: i == 1 && showTasksBadge
-                  ? Badge(
-                      smallSize: 8,
-                      child: Icon(_destinations[i].selectedIcon),
-                    )
-                  : Icon(_destinations[i].selectedIcon),
-              label: Text(_destinations[i].label),
-            ),
-          const Divider(),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(28, 10, 28, 16),
-            child: Text(
-              'v1.0.0+1',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+          drawer: NavigationDrawer(
+            selectedIndex: _selectedIndex,
+            onDestinationSelected: _onSelect,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(28, 16, 28, 10),
+                child: Text(
+                  'Miracle Claw',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              for (var i = 0; i < _destinations.length; i++)
+                NavigationDrawerDestination(
+                  icon: i == 1 && showTasksBadge
+                      ? Badge(
+                          smallSize: 8,
+                          child: Icon(_destinations[i].icon),
+                        )
+                      : Icon(_destinations[i].icon),
+                  selectedIcon: i == 1 && showTasksBadge
+                      ? Badge(
+                          smallSize: 8,
+                          child: Icon(_destinations[i].selectedIcon),
+                        )
+                      : Icon(_destinations[i].selectedIcon),
+                  label: Text(_destinations[i].label),
+                ),
+              const Divider(),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(28, 10, 28, 16),
+                child: Text(
+                  'v1.0.0+1',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                ),
+              ),
+            ],
+          ),
+          body: _pageFor(_selectedIndex),
+          floatingActionButton: showFab
+              ? _TasksFabCluster(
+                  expanded: _fabExpanded,
+                  onToggle: _toggleFab,
+                  onCollapse: _collapseFab,
+                )
+              : null,
+        ),
+        // Scrim over the whole Scaffold, shown only while the FAB
+        // cluster is expanded. It dims the list AND the FAB cluster so
+        // the expanded state reads as a deliberate overlay instead of
+        // "scrambled icons stacked on top of text". Tapping it
+        // collapses the cluster.
+        //
+        // This lives OUTSIDE the Scaffold on purpose: Scaffold lays
+        // `floatingActionButton` above `body`, so a scrim placed
+        // inside `body` renders *underneath* the FAB cluster (FABs stay
+        // bright on a dimmed list) and swallows taps meant for the
+        // FABs. Putting it last in an outer Stack puts it on top.
+        if (showFab)
+          ValueListenableBuilder<bool>(
+            valueListenable: _fabExpanded,
+            builder: (context, expanded, _) {
+              return IgnorePointer(
+                ignoring: !expanded,
+                child: AnimatedOpacity(
+                  opacity: expanded ? 1.0 : 0.0,
+                  duration: const Duration(milliseconds: 180),
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: _collapseFab,
+                    child: Container(color: Colors.black.withValues(alpha: 0.4)),
                   ),
-            ),
+                ),
+              );
+            },
           ),
-        ],
-      ),
-      body: _pageFor(_selectedIndex),
-      floatingActionButton: showFab ? const _TasksFabCluster() : null,
+      ],
     );
   }
 }
@@ -136,20 +195,20 @@ class _HomeShellState extends ConsumerState<HomeShell> {
 ///   - Material 3 spec puts the primary action on FAB. Voice + photo
 ///     are quick-capture siblings, so they live as speed-dial children.
 ///   - Tapping outside the cluster collapses it (FocusScope).
-class _TasksFabCluster extends StatefulWidget {
-  const _TasksFabCluster();
+///
+/// The expansion state is owned by [_HomeShellState] and passed in, so
+/// the scrim — a sibling of this widget in the outer Stack — can render
+/// on top of it and stay in sync.
+class _TasksFabCluster extends StatelessWidget {
+  const _TasksFabCluster({
+    required this.expanded,
+    required this.onToggle,
+    required this.onCollapse,
+  });
 
-  @override
-  State<_TasksFabCluster> createState() => _TasksFabClusterState();
-}
-
-class _TasksFabClusterState extends State<_TasksFabCluster> {
-  bool _expanded = false;
-
-  void _toggle() => setState(() => _expanded = !_expanded);
-  void _collapse() {
-    if (_expanded) setState(() => _expanded = false);
-  }
+  final ValueNotifier<bool> expanded;
+  final VoidCallback onToggle;
+  final VoidCallback onCollapse;
 
   @override
   Widget build(BuildContext context) {
@@ -157,74 +216,79 @@ class _TasksFabClusterState extends State<_TasksFabCluster> {
     return FocusScope(
       // Tapping outside the cluster should close it.
       onFocusChange: (has) {
-        if (!has) _collapse();
+        if (!has) onCollapse();
       },
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (_expanded) ...[
-            _MiniFab(
-              icon: Icons.graphic_eq,
-              label: 'Voice memo',
-              accent: const Color(0xFFBF360C), // deep orange 900
-              onTap: () {
-                _collapse();
-                context.push('/capture/voice');
-              },
-            ),
-            const SizedBox(height: 12),
-            _MiniFab(
-              icon: Icons.document_scanner,
-              label: 'Photo OCR',
-              accent: const Color(0xFF004D40), // teal 900
-              onTap: () {
-                _collapse();
-                context.push('/capture/photo');
-              },
-            ),
-            const SizedBox(height: 12),
-          ],
-          // Main FAB: large (extended) with primary gradient. The
-          // gradient is the visual cue that this is the primary action —
-          // mini-FABs above use a flat secondaryContainer so they read
-          // as siblings, not co-equals.
-          Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(20),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [scheme.primary, scheme.tertiary],
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: scheme.primary.withValues(alpha: 0.4),
-                  blurRadius: 12,
-                  offset: const Offset(0, 4),
+      child: ValueListenableBuilder<bool>(
+        valueListenable: expanded,
+        builder: (context, isExpanded, _) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (isExpanded) ...[
+                _MiniFab(
+                  icon: Icons.graphic_eq,
+                  label: 'Voice memo',
+                  accent: const Color(0xFFBF360C), // deep orange 900
+                  onTap: () {
+                    onCollapse();
+                    context.push('/capture/voice');
+                  },
                 ),
+                const SizedBox(height: 12),
+                _MiniFab(
+                  icon: Icons.document_scanner,
+                  label: 'Photo OCR',
+                  accent: const Color(0xFF004D40), // teal 900
+                  onTap: () {
+                    onCollapse();
+                    context.push('/capture/photo');
+                  },
+                ),
+                const SizedBox(height: 12),
               ],
-            ),
-            child: FloatingActionButton.large(
-              onPressed: _toggle,
-              backgroundColor: Colors.transparent,
-              foregroundColor: scheme.onPrimary,
-              elevation: 0,
-              child: AnimatedRotation(
-                turns: _expanded ? 0.125 : 0,
-                duration: const Duration(milliseconds: 200),
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 200),
-                  child: Icon(
-                    key: ValueKey(_expanded),
-                    _expanded ? Icons.close : Icons.add,
-                    size: 32,
+              // Main FAB: large (extended) with primary gradient. The
+              // gradient is the visual cue that this is the primary action —
+              // mini-FABs above use a flat secondaryContainer so they read
+              // as siblings, not co-equals.
+              Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(20),
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [scheme.primary, scheme.tertiary],
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: scheme.primary.withValues(alpha: 0.4),
+                      blurRadius: 12,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: FloatingActionButton.large(
+                  onPressed: onToggle,
+                  backgroundColor: Colors.transparent,
+                  foregroundColor: scheme.onPrimary,
+                  elevation: 0,
+                  child: AnimatedRotation(
+                    turns: isExpanded ? 0.125 : 0,
+                    duration: const Duration(milliseconds: 200),
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 200),
+                      child: Icon(
+                        key: ValueKey(isExpanded),
+                        isExpanded ? Icons.close : Icons.add,
+                        size: 32,
+                      ),
+                    ),
                   ),
                 ),
               ),
-            ),
-          ),
-        ],
+            ],
+          );
+        },
       ),
     );
   }

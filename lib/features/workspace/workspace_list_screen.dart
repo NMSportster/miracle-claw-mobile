@@ -121,7 +121,14 @@ class _WorkspaceListScreenState extends ConsumerState<WorkspaceListScreen> {
           }
           return ListView.separated(
             controller: _scroll,
-            padding: const EdgeInsets.symmetric(vertical: 8),
+            // Bottom padding accounts for the FAB cluster in home_shell.
+            // Collapsed FAB = ~96px; expanded cluster adds two more
+            // ~44px mini-FABs + 12px gaps + label chips. 180px keeps
+            // the last list item visible above the FAB even when the
+            // cluster is fully expanded. Without it the cluster overlays
+            // the bottom 3 items, which David described as the icons
+            // being 'scrambled among the tasks in an overlay'.
+            padding: const EdgeInsets.fromLTRB(0, 8, 0, 180),
             itemCount: all.length + 2 + (_hasMore ? 1 : 0),  // +1 for quota banner, +1 for daily summary card
             separatorBuilder: (_, i) {
               if (i == 0) return const SizedBox.shrink();
