@@ -94,90 +94,109 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     // See home_shell speed-dial state in _FabExpanded below.
     final showFab = _selectedIndex == 1;
 
-    return Stack(
-      children: [
-        Scaffold(
-          appBar: AppBar(
-            title: Text(_destinations[_selectedIndex].label),
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(_destinations[_selectedIndex].label),
+      ),
+      drawer: NavigationDrawer(
+        selectedIndex: _selectedIndex,
+        onDestinationSelected: _onSelect,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(28, 16, 28, 10),
+            child: Text(
+              'Miracle Claw',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
           ),
-          drawer: NavigationDrawer(
-            selectedIndex: _selectedIndex,
-            onDestinationSelected: _onSelect,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(28, 16, 28, 10),
-                child: Text(
-                  'Miracle Claw',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-              ),
-              for (var i = 0; i < _destinations.length; i++)
-                NavigationDrawerDestination(
-                  icon: i == 1 && showTasksBadge
-                      ? Badge(
-                          smallSize: 8,
-                          child: Icon(_destinations[i].icon),
-                        )
-                      : Icon(_destinations[i].icon),
-                  selectedIcon: i == 1 && showTasksBadge
-                      ? Badge(
-                          smallSize: 8,
-                          child: Icon(_destinations[i].selectedIcon),
-                        )
-                      : Icon(_destinations[i].selectedIcon),
-                  label: Text(_destinations[i].label),
-                ),
-              const Divider(),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(28, 10, 28, 16),
-                child: Text(
-                  'v1.0.0+1',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                ),
-              ),
-            ],
-          ),
-          body: _pageFor(_selectedIndex),
-          floatingActionButton: showFab
-              ? _TasksFabCluster(
-                  expanded: _fabExpanded,
-                  onToggle: _toggleFab,
-                  onCollapse: _collapseFab,
-                )
-              : null,
-        ),
-        // Scrim over the whole Scaffold, shown only while the FAB
-        // cluster is expanded. It dims the list AND the FAB cluster so
-        // the expanded state reads as a deliberate overlay instead of
-        // "scrambled icons stacked on top of text". Tapping it
-        // collapses the cluster.
-        //
-        // This lives OUTSIDE the Scaffold on purpose: Scaffold lays
-        // `floatingActionButton` above `body`, so a scrim placed
-        // inside `body` renders *underneath* the FAB cluster (FABs stay
-        // bright on a dimmed list) and swallows taps meant for the
-        // FABs. Putting it last in an outer Stack puts it on top.
-        if (showFab)
-          ValueListenableBuilder<bool>(
-            valueListenable: _fabExpanded,
-            builder: (context, expanded, _) {
-              return IgnorePointer(
-                ignoring: !expanded,
-                child: AnimatedOpacity(
-                  opacity: expanded ? 1.0 : 0.0,
-                  duration: const Duration(milliseconds: 180),
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: _collapseFab,
-                    child: Container(color: Colors.black.withValues(alpha: 0.4)),
+          for (var i = 0; i < _destinations.length; i++)
+            NavigationDrawerDestination(
+              icon: i == 1 && showTasksBadge
+                  ? Badge(
+                      smallSize: 8,
+                      child: Icon(_destinations[i].icon),
+                    )
+                  : Icon(_destinations[i].icon),
+              selectedIcon: i == 1 && showTasksBadge
+                  ? Badge(
+                      smallSize: 8,
+                      child: Icon(_destinations[i].selectedIcon),
+                    )
+                  : Icon(_destinations[i].selectedIcon),
+              label: Text(_destinations[i].label),
+            ),
+          const Divider(),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(28, 10, 28, 16),
+            child: Text(
+              'v1.0.0+1',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
-                ),
-              );
-            },
+            ),
           ),
-      ],
+        ],
+      ),
+      body: showFab
+          // The scrim lives in the BODY stack, below the FAB. That
+          // ordering matters for hit-testing: Scaffold renders
+          // `floatingActionButton` above `body`, so a scrim in the body
+          // cannot swallow taps aimed at the FAB cluster. (An outer
+          // Stack with the scrim on top DOES dim the FAB, but then the
+          // scrim's opaque GestureDetector eats every tap on
+          // Voice memo / Photo OCR and just collapses the cluster
+          // instead of navigating.)
+          //
+          // To still read as "dimmed", the FAB subtree applies its own
+          // 40% black overlay while expanded — so the FAB looks dimmed
+          // but stays fully tappable.
+          ? Stack(
+              children: [
+                _pageFor(_selectedIndex),
+                _TasksScrim(
+                  expanded: _fabExpanded,
+                  onDismiss: _collapseFab,
+                ),
+              ],
+            )
+          : _pageFor(_selectedIndex),
+      floatingActionButton: showFab
+          ? _TasksFabCluster(
+              expanded: _fabExpanded,
+              onToggle: _toggleFab,
+              onCollapse: _collapseFab,
+            )
+          : null,
+    );
+  }
+}
+
+/// Dimming overlay shown over the Tasks list while the FAB cluster is
+/// expanded. Tapping it collapses the cluster.
+class _TasksScrim extends StatelessWidget {
+  const _TasksScrim({required this.expanded, required this.onDismiss});
+
+  final ValueNotifier<bool> expanded;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: expanded,
+      builder: (context, isExpanded, _) {
+        return IgnorePointer(
+          ignoring: !isExpanded,
+          child: AnimatedOpacity(
+            opacity: isExpanded ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 180),
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: onDismiss,
+              child: Container(color: Colors.black.withValues(alpha: 0.4)),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -221,71 +240,98 @@ class _TasksFabCluster extends StatelessWidget {
       child: ValueListenableBuilder<bool>(
         valueListenable: expanded,
         builder: (context, isExpanded, _) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            mainAxisSize: MainAxisSize.min,
+          // The page-level scrim sits UNDER the FAB in the widget tree,
+          // so it cannot dim the FAB itself. This overlay does that
+          // job instead — it is painted over the cluster (so it reads
+          // as dimmed along with the page) but it does NOT absorb
+          // pointer events, so Voice memo / Photo OCR stay tappable.
+          return Stack(
+            alignment: Alignment.bottomRight,
             children: [
-              if (isExpanded) ...[
-                _MiniFab(
-                  icon: Icons.graphic_eq,
-                  label: 'Voice memo',
-                  accent: const Color(0xFFBF360C), // deep orange 900
-                  onTap: () {
-                    onCollapse();
-                    context.push('/capture/voice');
-                  },
-                ),
-                const SizedBox(height: 12),
-                _MiniFab(
-                  icon: Icons.document_scanner,
-                  label: 'Photo OCR',
-                  accent: const Color(0xFF004D40), // teal 900
-                  onTap: () {
-                    onCollapse();
-                    context.push('/capture/photo');
-                  },
-                ),
-                const SizedBox(height: 12),
-              ],
-              // Main FAB: large (extended) with primary gradient. The
-              // gradient is the visual cue that this is the primary action —
-              // mini-FABs above use a flat secondaryContainer so they read
-              // as siblings, not co-equals.
-              Container(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(20),
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [scheme.primary, scheme.tertiary],
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: scheme.primary.withValues(alpha: 0.4),
-                      blurRadius: 12,
-                      offset: const Offset(0, 4),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (isExpanded) ...[
+                    _MiniFab(
+                      icon: Icons.graphic_eq,
+                      label: 'Voice memo',
+                      accent: const Color(0xFFBF360C), // deep orange 900
+                      onTap: () {
+                        onCollapse();
+                        context.push('/capture/voice');
+                      },
                     ),
+                    const SizedBox(height: 12),
+                    _MiniFab(
+                      icon: Icons.document_scanner,
+                      label: 'Photo OCR',
+                      accent: const Color(0xFF004D40), // teal 900
+                      onTap: () {
+                        onCollapse();
+                        context.push('/capture/photo');
+                      },
+                    ),
+                    const SizedBox(height: 12),
                   ],
-                ),
-                child: FloatingActionButton.large(
-                  onPressed: onToggle,
-                  backgroundColor: Colors.transparent,
-                  foregroundColor: scheme.onPrimary,
-                  elevation: 0,
-                  child: AnimatedRotation(
-                    turns: isExpanded ? 0.125 : 0,
-                    duration: const Duration(milliseconds: 200),
-                    child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 200),
-                      child: Icon(
-                        key: ValueKey(isExpanded),
-                        isExpanded ? Icons.close : Icons.add,
-                        size: 32,
+                  // Main FAB: large (extended) with primary gradient. The
+                  // gradient is the visual cue that this is the primary action —
+                  // mini-FABs above use a flat secondaryContainer so they read
+                  // as siblings, not co-equals.
+                  Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(20),
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [scheme.primary, scheme.tertiary],
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: scheme.primary.withValues(alpha: 0.4),
+                          blurRadius: 12,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: FloatingActionButton.large(
+                      onPressed: onToggle,
+                      backgroundColor: Colors.transparent,
+                      foregroundColor: scheme.onPrimary,
+                      elevation: 0,
+                      // NO AnimatedRotation here. A 45-degree rotation of the
+                      // X icon turns it into a "+", which is indistinguishable
+                      // from the collapsed state — the FAB looked permanently
+                      // collapsed even with the cluster expanded. The X alone
+                      // is an unambiguous "close" affordance.
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 200),
+                        transitionBuilder: (child, animation) => FadeTransition(
+                          opacity: animation,
+                          child: ScaleTransition(
+                            scale: Tween<double>(begin: 0.6, end: 1.0).animate(animation),
+                            child: child,
+                          ),
+                        ),
+                        child: Icon(
+                          key: ValueKey(isExpanded),
+                          isExpanded ? Icons.close : Icons.add,
+                          size: 32,
+                        ),
                       ),
                     ),
                   ),
-                ),
+                ],
               ),
+              // Dim overlay painted over the cluster while expanded.
+              // `IgnorePointer` is essential — without it this overlay
+              // would swallow taps on the mini-FABs.
+              if (isExpanded)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: Container(color: Colors.black.withValues(alpha: 0.4)),
+                  ),
+                ),
             ],
           );
         },
