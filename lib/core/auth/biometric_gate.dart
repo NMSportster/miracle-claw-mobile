@@ -12,10 +12,38 @@ class BiometricGate {
 
   final LocalAuthentication _auth = LocalAuthentication();
 
+  /// True when the device hardware can perform biometric authentication.
   Future<bool> canCheckBiometrics() async {
     try {
       return await _auth.canCheckBiometrics || await _auth.isDeviceSupported();
     } catch (_) {
+      return false;
+    }
+  }
+
+  /// True when the user has actually enrolled at least one biometric.
+  ///
+  /// This is deliberately distinct from [canCheckBiometrics]: a device
+  /// can have a working fingerprint sensor (or support device
+  /// credentials) while having *nothing enrolled*. Prompting in that
+  /// state is a trap — the user can never satisfy the prompt, and the
+  /// only way past the unlock screen is "Sign in as a different user",
+  /// which forces a full re-login.
+  ///
+  /// That exact situation bit the SM-N960U test phone, which reports
+  /// a fingerprint sensor with zero enrolled templates. Every cold
+  /// start landed on the unlock screen and every test iteration needed
+  /// a manual re-login. Gating on *enrolled* biometrics instead of
+  /// *capable* biometrics removes the trap entirely: with nothing
+  /// enrolled, the app goes straight in.
+  Future<bool> hasEnrolledBiometrics() async {
+    try {
+      final enrolled = await _auth.getAvailableBiometrics();
+      return enrolled.isNotEmpty;
+    } catch (_) {
+      // If we can't enumerate, don't gate — a false "required" is
+      // worse than a false "not required" (one logs the user out,
+      // the other just skips a lock screen).
       return false;
     }
   }
@@ -59,6 +87,11 @@ class BiometricGateNotifier extends StateNotifier<BiometricGateState> {
   final Ref _ref;
 
   /// Called once at app boot. Decides whether to require biometric re-auth.
+  ///
+  /// Requires biometrics only when the user has actually *enrolled*
+  /// one. A device that merely supports biometrics (hardware present,
+  /// nothing enrolled) must NOT gate — see
+  /// [BiometricGate.hasEnrolledBiometrics].
   Future<void> evaluate() async {
     final auth = _ref.read(authNotifierProvider);
     if (auth.status != AuthStatus.signedIn) {
@@ -67,8 +100,8 @@ class BiometricGateNotifier extends StateNotifier<BiometricGateState> {
     }
 
     final gate = _ref.read(biometricGateProvider);
-    final hasBiometrics = await gate.canCheckBiometrics();
-    state = BiometricGateState(required: hasBiometrics);
+    final hasEnrolled = await gate.hasEnrolledBiometrics();
+    state = BiometricGateState(required: hasEnrolled);
   }
 
   /// Called when user attempts to unlock. Returns true on success.

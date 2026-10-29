@@ -42,6 +42,27 @@ class _BiometricUnlockScreenState extends ConsumerState<BiometricUnlockScreen> {
     });
   }
 
+  /// Watch the gate and step straight through when no biometric is
+  /// required.
+  ///
+  /// The router sends every signed-in user to `/unlock`, so this screen
+  /// must be able to dismiss itself. If the device has no *enrolled*
+  /// biometric there is nothing to prompt for — the gate reports
+  /// `required: false` and we continue into the app. Without this the
+  /// user would be stranded on the unlock screen with no Unlock button
+  /// to press.
+  ///
+  /// This is the case on any device where the user never enrolled a
+  /// fingerprint or set up face unlock (e.g. the SM-N960U test phone,
+  /// which has a fingerprint sensor with zero enrolled templates).
+  void _maybeProceed(WidgetRef ref, BiometricGateState gate) {
+    if (gate.required) return;
+    if (ref.read(authNotifierProvider).status != AuthStatus.signedIn) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.go('/');
+    });
+  }
+
   Future<void> _unlock() async {
     final ok = await ref.read(biometricGateNotifierProvider.notifier).tryUnlock();
     if (ok && mounted) {
@@ -58,6 +79,8 @@ class _BiometricUnlockScreenState extends ConsumerState<BiometricUnlockScreen> {
   Widget build(BuildContext context) {
     final auth = ref.watch(authNotifierProvider);
     final gate = ref.watch(biometricGateNotifierProvider);
+
+    _maybeProceed(ref, gate);
 
     return Scaffold(
       body: SafeArea(
