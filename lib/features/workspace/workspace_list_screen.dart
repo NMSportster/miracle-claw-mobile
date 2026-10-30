@@ -15,6 +15,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/workspace/note_model.dart';
+import '../../core/workspace/note_status.dart';
 import '../../core/workspace/workspace_providers.dart';
 import '../../core/workspace/workspace_service.dart';
 import 'workspace_states.dart';
@@ -372,6 +373,14 @@ class _NoteTile extends ConsumerWidget {
     );
     final headline = preview ?? _kindLabel(kind);
     final scheme = Theme.of(context).colorScheme;
+    // Task state badge. Before this, the list showed no status at all,
+    // so a user could not tell "queued" from "working on it" from
+    // "failed" without opening every note. The server derives this
+    // (see NoteSummary.status).
+    final stateBadge = NoteStateBadge(state: note.status, compact: true);
+    // The badge renders nothing for an unknown state, so only reserve
+    // the spacing when there is actually a state to show.
+    final hasBadge = canonicalNoteState(note.status) != null;
     return ListTile(
       leading: _iconForKind(kind),
       title: Text(
@@ -402,6 +411,8 @@ class _NoteTile extends ConsumerWidget {
                 ),
               ),
             if (kind != 'note') const SizedBox(width: 8),
+            stateBadge,
+            if (hasBadge) const SizedBox(width: 8),
             Expanded(
               child: Text(
                 _subtitleFor(note),

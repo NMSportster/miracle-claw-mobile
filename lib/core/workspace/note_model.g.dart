@@ -16,6 +16,8 @@ _$NoteSummaryImpl _$$NoteSummaryImplFromJson(Map<String, dynamic> json) =>
       lastUpdatedAt: DateTime.parse(json['last_updated_at'] as String),
       lastUpdatedBy: json['last_updated_by'] as String?,
       requestKind: json['request_kind'] as String?,
+      status: json['status'] as String?,
+      hasResult: json['has_result'] as bool? ?? false,
     );
 
 Map<String, dynamic> _$$NoteSummaryImplToJson(_$NoteSummaryImpl instance) =>
@@ -26,6 +28,8 @@ Map<String, dynamic> _$$NoteSummaryImplToJson(_$NoteSummaryImpl instance) =>
       'last_updated_at': instance.lastUpdatedAt.toIso8601String(),
       'last_updated_by': instance.lastUpdatedBy,
       'request_kind': instance.requestKind,
+      'status': instance.status,
+      'has_result': instance.hasResult,
     };
 
 _$SubkeyContentImpl _$$SubkeyContentImplFromJson(Map<String, dynamic> json) =>

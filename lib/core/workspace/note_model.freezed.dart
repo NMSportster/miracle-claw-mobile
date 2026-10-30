@@ -33,6 +33,21 @@ mixin _$NoteSummary {
   @JsonKey(name: 'request_kind')
   String? get requestKind => throw _privateConstructorUsedError;
 
+  /// Task state, derived server-side so the Tasks list can show
+  /// pending / in_progress / done / failed without a detail fetch
+  /// per row.
+  ///
+  /// Server-side derivation: the `status` subkey is optional, so a note
+  /// that has a `result` but no `status` (daily summaries, voice memos,
+  /// photo OCR) is reported as `done`.
+  @JsonKey(name: 'status')
+  String? get status => throw _privateConstructorUsedError;
+
+  /// Whether this note already has a `result` subkey. `true` means the
+  /// work is done — the same "result-exists" rule the desktop guard uses.
+  @JsonKey(name: 'has_result')
+  bool get hasResult => throw _privateConstructorUsedError;
+
   /// Serializes this NoteSummary to a JSON map.
   Map<String, dynamic> toJson() => throw _privateConstructorUsedError;
 
@@ -57,6 +72,8 @@ abstract class $NoteSummaryCopyWith<$Res> {
     @JsonKey(name: 'last_updated_at') DateTime lastUpdatedAt,
     @JsonKey(name: 'last_updated_by') String? lastUpdatedBy,
     @JsonKey(name: 'request_kind') String? requestKind,
+    @JsonKey(name: 'status') String? status,
+    @JsonKey(name: 'has_result') bool hasResult,
   });
 }
 
@@ -81,6 +98,8 @@ class _$NoteSummaryCopyWithImpl<$Res, $Val extends NoteSummary>
     Object? lastUpdatedAt = null,
     Object? lastUpdatedBy = freezed,
     Object? requestKind = freezed,
+    Object? status = freezed,
+    Object? hasResult = null,
   }) {
     return _then(
       _value.copyWith(
@@ -108,6 +127,14 @@ class _$NoteSummaryCopyWithImpl<$Res, $Val extends NoteSummary>
                 ? _value.requestKind
                 : requestKind // ignore: cast_nullable_to_non_nullable
                       as String?,
+            status: freezed == status
+                ? _value.status
+                : status // ignore: cast_nullable_to_non_nullable
+                      as String?,
+            hasResult: null == hasResult
+                ? _value.hasResult
+                : hasResult // ignore: cast_nullable_to_non_nullable
+                      as bool,
           )
           as $Val,
     );
@@ -130,6 +157,8 @@ abstract class _$$NoteSummaryImplCopyWith<$Res>
     @JsonKey(name: 'last_updated_at') DateTime lastUpdatedAt,
     @JsonKey(name: 'last_updated_by') String? lastUpdatedBy,
     @JsonKey(name: 'request_kind') String? requestKind,
+    @JsonKey(name: 'status') String? status,
+    @JsonKey(name: 'has_result') bool hasResult,
   });
 }
 
@@ -153,6 +182,8 @@ class __$$NoteSummaryImplCopyWithImpl<$Res>
     Object? lastUpdatedAt = null,
     Object? lastUpdatedBy = freezed,
     Object? requestKind = freezed,
+    Object? status = freezed,
+    Object? hasResult = null,
   }) {
     return _then(
       _$NoteSummaryImpl(
@@ -180,6 +211,14 @@ class __$$NoteSummaryImplCopyWithImpl<$Res>
             ? _value.requestKind
             : requestKind // ignore: cast_nullable_to_non_nullable
                   as String?,
+        status: freezed == status
+            ? _value.status
+            : status // ignore: cast_nullable_to_non_nullable
+                  as String?,
+        hasResult: null == hasResult
+            ? _value.hasResult
+            : hasResult // ignore: cast_nullable_to_non_nullable
+                  as bool,
       ),
     );
   }
@@ -195,6 +234,8 @@ class _$NoteSummaryImpl implements _NoteSummary {
     @JsonKey(name: 'last_updated_at') required this.lastUpdatedAt,
     @JsonKey(name: 'last_updated_by') this.lastUpdatedBy,
     @JsonKey(name: 'request_kind') this.requestKind,
+    @JsonKey(name: 'status') this.status,
+    @JsonKey(name: 'has_result') this.hasResult = false,
   }) : _subkeys = subkeys;
 
   factory _$NoteSummaryImpl.fromJson(Map<String, dynamic> json) =>
@@ -224,9 +265,26 @@ class _$NoteSummaryImpl implements _NoteSummary {
   @JsonKey(name: 'request_kind')
   final String? requestKind;
 
+  /// Task state, derived server-side so the Tasks list can show
+  /// pending / in_progress / done / failed without a detail fetch
+  /// per row.
+  ///
+  /// Server-side derivation: the `status` subkey is optional, so a note
+  /// that has a `result` but no `status` (daily summaries, voice memos,
+  /// photo OCR) is reported as `done`.
+  @override
+  @JsonKey(name: 'status')
+  final String? status;
+
+  /// Whether this note already has a `result` subkey. `true` means the
+  /// work is done — the same "result-exists" rule the desktop guard uses.
+  @override
+  @JsonKey(name: 'has_result')
+  final bool hasResult;
+
   @override
   String toString() {
-    return 'NoteSummary(noteId: $noteId, subkeys: $subkeys, totalBytes: $totalBytes, lastUpdatedAt: $lastUpdatedAt, lastUpdatedBy: $lastUpdatedBy, requestKind: $requestKind)';
+    return 'NoteSummary(noteId: $noteId, subkeys: $subkeys, totalBytes: $totalBytes, lastUpdatedAt: $lastUpdatedAt, lastUpdatedBy: $lastUpdatedBy, requestKind: $requestKind, status: $status, hasResult: $hasResult)';
   }
 
   @override
@@ -243,7 +301,10 @@ class _$NoteSummaryImpl implements _NoteSummary {
             (identical(other.lastUpdatedBy, lastUpdatedBy) ||
                 other.lastUpdatedBy == lastUpdatedBy) &&
             (identical(other.requestKind, requestKind) ||
-                other.requestKind == requestKind));
+                other.requestKind == requestKind) &&
+            (identical(other.status, status) || other.status == status) &&
+            (identical(other.hasResult, hasResult) ||
+                other.hasResult == hasResult));
   }
 
   @JsonKey(includeFromJson: false, includeToJson: false)
@@ -256,6 +317,8 @@ class _$NoteSummaryImpl implements _NoteSummary {
     lastUpdatedAt,
     lastUpdatedBy,
     requestKind,
+    status,
+    hasResult,
   );
 
   /// Create a copy of NoteSummary
@@ -280,6 +343,8 @@ abstract class _NoteSummary implements NoteSummary {
     @JsonKey(name: 'last_updated_at') required final DateTime lastUpdatedAt,
     @JsonKey(name: 'last_updated_by') final String? lastUpdatedBy,
     @JsonKey(name: 'request_kind') final String? requestKind,
+    @JsonKey(name: 'status') final String? status,
+    @JsonKey(name: 'has_result') final bool hasResult,
   }) = _$NoteSummaryImpl;
 
   factory _NoteSummary.fromJson(Map<String, dynamic> json) =
@@ -302,6 +367,23 @@ abstract class _NoteSummary implements NoteSummary {
   @override
   @JsonKey(name: 'request_kind')
   String? get requestKind;
+
+  /// Task state, derived server-side so the Tasks list can show
+  /// pending / in_progress / done / failed without a detail fetch
+  /// per row.
+  ///
+  /// Server-side derivation: the `status` subkey is optional, so a note
+  /// that has a `result` but no `status` (daily summaries, voice memos,
+  /// photo OCR) is reported as `done`.
+  @override
+  @JsonKey(name: 'status')
+  String? get status;
+
+  /// Whether this note already has a `result` subkey. `true` means the
+  /// work is done — the same "result-exists" rule the desktop guard uses.
+  @override
+  @JsonKey(name: 'has_result')
+  bool get hasResult;
 
   /// Create a copy of NoteSummary
   /// with the given fields replaced by the non-null parameter values.

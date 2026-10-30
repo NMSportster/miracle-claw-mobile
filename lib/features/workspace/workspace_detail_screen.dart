@@ -14,6 +14,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../../core/workspace/note_model.dart';
+import '../../core/workspace/note_status.dart';
 import '../../core/workspace/workspace_providers.dart';
 import '../../core/workspace/workspace_service.dart' show WorkspaceException;
 import 'workspace_states.dart';
@@ -544,44 +545,7 @@ class SubkeyCard extends StatelessWidget {
     );
   }
 
-  Color _statusColor(String state, BuildContext context) {
-    switch (state) {
-      case 'done':
-      case 'completed':
-      case 'success':
-      case 'finished':
-        return Theme.of(context).colorScheme.tertiary;
-      case 'error':
-      case 'failed':
-        return Theme.of(context).colorScheme.error;
-      case 'running':
-      case 'in_progress':
-      case 'started':
-        return Theme.of(context).colorScheme.primary;
-      default:
-        return Theme.of(context).colorScheme.onSurfaceVariant;
-    }
-  }
+  Color _statusColor(String state, BuildContext context) => noteStateColor(state, context);
 
-  IconData _statusIcon(String state) {
-    switch (state) {
-      case 'done':
-      case 'completed':
-      case 'success':
-      case 'finished':
-        return Icons.check_circle_outline;
-      case 'error':
-      case 'failed':
-        return Icons.error_outline;
-      case 'running':
-      case 'in_progress':
-      case 'started':
-        return Icons.hourglass_top;
-      case 'queued':
-      case 'pending':
-        return Icons.schedule;
-      default:
-        return Icons.info_outline;
-    }
-  }
+  IconData _statusIcon(String state) => noteStateIcon(state);
 }

@@ -32,6 +32,17 @@ sealed class NoteSummary with _$NoteSummary {
     @JsonKey(name: 'last_updated_at') required DateTime lastUpdatedAt,
     @JsonKey(name: 'last_updated_by') String? lastUpdatedBy,
     @JsonKey(name: 'request_kind') String? requestKind,
+    /// Task state, derived server-side so the Tasks list can show
+    /// pending / in_progress / done / failed without a detail fetch
+    /// per row.
+    ///
+    /// Server-side derivation: the `status` subkey is optional, so a note
+    /// that has a `result` but no `status` (daily summaries, voice memos,
+    /// photo OCR) is reported as `done`.
+    @JsonKey(name: 'status') String? status,
+    /// Whether this note already has a `result` subkey. `true` means the
+    /// work is done — the same "result-exists" rule the desktop guard uses.
+    @JsonKey(name: 'has_result') @Default(false) bool hasResult,
   }) = _NoteSummary;
 
   factory NoteSummary.fromJson(Map<String, dynamic> json) =>
